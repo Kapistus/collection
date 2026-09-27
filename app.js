@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-13";
+const APP_VERSION = "2026.09.27-14";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -426,83 +426,106 @@ const reportMerge = (r, target) => toast(r.added || r.updated
   ? `Merged into “${target.title}”: added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` + (r.updated ? `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}` : "") + ` · ${r.same} unchanged.`
   : `Nothing new: all ${r.same} entries were already in “${target.title}”.`, 6000);
 
-/** Import a collection (ManaBox CSV or share code):
-    1. identical to an existing collection -> ask if you really want to import the same thing again
-    2. overlaps an existing collection     -> merge into it (selectable), create a new one, or replace
-    3. no overlap                          -> merge into a collection you choose, or create a new one */
-async function addCollection(title, kind, entries) {
-  const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
-  const what = kind === "csv" ? "file" : "shared collection";
-  if (!collections.length) return createCollection(title, kind, entries, id);
+const newListId = () => "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+const toListItem = (e, from) => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finish, qty: e.qty, owned: Math.max(e.owned || 0, e.qty),
+  name: e.name || "", sid: e.sid || "", setName: e.setName || "", rarity: e.rarity || "", binder: e.binder || "",
+  condition: e.condition || "", language: e.language || "", from: e.from || from });
+/** Merge into a list by printing + finish: new printings are added, known ones take the new quantity. */
+function mergeIntoList(l, entries, from) {
+  const byKey = new Map(l.items.map(i => [itemKey(i), i]));
+  let added = 0, updated = 0, same = 0;
+  for (const e of entries) {
+    const old = byKey.get(itemKey(e));
+    if (!old) { const it = toListItem(e, from); l.items.push(it); byKey.set(itemKey(e), it); added++; }
+    else if (old.qty !== e.qty) { old.qty = e.qty; old.owned = Math.max(old.owned || 0, e.qty); updated++; }
+    else same++;
+  }
+  return { added, updated, same };
+}
+/** Every collection and list the import could go into. */
+function importTargets() {
+  return [...collections.map(c => ({ type: "c", obj: c, id: "c:" + c.id, title: c.title, entries: c.entries })),
+          ...lists.map(l => ({ type: "l", obj: l, id: "l:" + l.id, title: l.name, entries: l.items }))];
+}
+function isIdentical(t, entries, kind) {
+  if (t.entries.length !== entries.length) return false;
+  if (t.type === "c" && t.obj.kind === "csv" && kind === "csv") return contentKeyRows(t.entries) === contentKeyRows(entries);
+  return contentKey(t.entries) === contentKey(entries);
+}
+function overlapWith(t, entries, kind) {
+  if (t.type === "c") return overlap(t.obj, entries, kind);
+  const keys = new Set(entries.map(itemKey));
+  return t.entries.reduce((n, e) => n + (keys.has(itemKey(e)) ? 1 : 0), 0);
+}
+const targetLabel = t => `${t.type === "c" ? "Collection" : "List"}: ${t.title} (${cardCount(t.entries)} cards)`;
 
-  // 1. exactly the same
-  const same = collections.find(x => x.id === id) || collections.find(x => x.entries.length === entries.length &&
-    (kind === "csv" && x.kind === "csv" ? contentKeyRows(x.entries) === contentKeyRows(entries) : contentKey(x.entries) === contentKey(entries)));
-  if (same) {
-    const choice = await askChoice("Import the same collection again?",
-      `This ${what} is identical to your collection “${same.title}” (${same.entries.length} entries, ${cardCount(same.entries)} cards). Importing it again creates a duplicate collection.\n\nAre you sure?`,
-      [["cancel", "Cancel", true], ["new", "Import anyway as a new collection"]]);
-    if (choice !== "new") { setView("c:" + same.id); return null; }
+/** Import cards (ManaBox CSV, shared collection or shared list). Any existing collection or list can be the target:
+    1. identical to one of them    -> ask if you really want to import the same thing again (Cancel is the default)
+    2. overlaps one of them        -> merge into it (preselected, any other can be chosen), create new, or replace
+    3. nothing in common           -> merge into a collection or list you choose, or create new */
+async function importCards(title, kind, entries, asList = false) {
+  const what = kind === "csv" ? "file" : asList ? "shared list" : "shared collection";
+  const from = "imported " + new Date().toLocaleDateString();
+  const createNew = () => {
+    if (asList) {
+      const l = { id: newListId(), name: uniqueName(title, new Set(lists.map(x => x.name))), created: Date.now(), items: entries.map(e => toListItem(e, from)) };
+      lists.push(l); saveLists(); setView("l:" + l.id); return l;
+    }
     return createCollection(title, kind, entries);
+  };
+  const targets = importTargets();
+  if (!targets.length) return createNew();
+  const newLabel = asList ? "Create new list" : "Create new collection";
+
+  // 1. exactly the same as something you have
+  const same = targets.find(t => isIdentical(t, entries, kind));
+  if (same) {
+    const choice = await askChoice(`Import the same ${same.type === "c" ? "collection" : "list"} again?`,
+      `This ${what} is identical to your ${same.type === "c" ? "collection" : "list"} “${same.title}” (${same.entries.length} entries, ${cardCount(same.entries)} cards). Importing it again creates a duplicate.\n\nAre you sure?`,
+      [["cancel", "Cancel", true], ["new", asList ? "Import anyway as a new list" : "Import anyway as a new collection"]]);
+    if (choice !== "new") { setView(same.id); return null; }
+    return createNew();
   }
 
-  // 2. / 3. changed version of an existing collection, or completely new cards
-  const scored = collections.map(c => ({ c, n: overlap(c, entries, kind) })).sort((a, b) => b.n - a.n);
+  // 2. / 3.
+  // prefer the same type: a shared list's cards always come from some collection, so a list should match a list
+  const wantType = asList ? "l" : "c";
+  const scored = targets.map(t => ({ t, n: overlapWith(t, entries, kind) }))
+    .sort((a, b) => ((b.n > 0 && b.t.type === wantType) - (a.n > 0 && a.t.type === wantType)) || b.n - a.n);
   const best = scored[0].n > 0 ? scored[0] : null;
-  const current = currentView()?.type === "c" ? currentView().obj : null;
-  const lastTarget = collections.find(c => c.id === load(K.lastTarget, ""));
-  const preselect = (best?.c || lastTarget || current || collections[0]).id;
-  const options = collections.map(c => [c.id, `${c.title} (${cardCount(c.entries)} cards)`]);
+  const cur = currentView();
+  const preselect = best?.t.id || targets.find(t => t.id === load(K.lastTarget, ""))?.id || (cur && targets.find(t => t.id === viewId)?.id) || targets[0].id;
   const text = best
-    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) shares ${best.n} entries with your collection “${best.c.title}”: it looks like a changed version of it.`
-    : `None of the ${entries.length} entries (${cardCount(entries)} cards) in this ${what} are in your existing collections.`;
-  const buttons = [["merge", "Merge into selected", true], ["new", "Create new collection"]];
+    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) shares ${best.n} entries with your ${best.t.type === "c" ? "collection" : "list"} “${best.t.title}”: it looks like a changed version of it.`
+    : `None of the ${entries.length} entries (${cardCount(entries)} cards) in this ${what} are in your existing collections or lists.`;
+  const buttons = [["merge", "Merge into selected", true], ["new", newLabel]];
   if (best) buttons.push(["replace", "Replace selected"]);
   buttons.push(["cancel", "Cancel"]);
-  const res = await askChoice(best ? "Update an existing collection?" : "Merge or create a new collection?",
-    text + "\n\nMerge adds cards that aren't in the selected collection yet and updates changed quantities; nothing is removed." +
-    (best ? "\nReplace makes the selected collection exactly this " + what + " (cards not in it are removed)." : "") +
-    "\nYour lists are not affected.",
-    buttons, best ? K.choiceUpdate : K.choiceNew, { label: "Collection", options, value: preselect });
+  const res = await askChoice(best ? "Update an existing collection or list?" : "Merge or create new?",
+    text + "\n\nMerge adds cards that aren't in the selected collection or list yet and updates changed quantities; nothing is removed." +
+    (best ? "\nReplace makes the selected one exactly this " + what + " (cards not in it are removed)." : "") +
+    "\nYou can pick any collection or list below, whatever its name.",
+    buttons, best ? K.choiceUpdate : K.choiceNew,
+    { label: "Into", options: targets.map(t => [t.id, targetLabel(t)]), value: preselect });
   if (!res || res.choice === "cancel") return null;
-  if (res.choice === "new") return createCollection(title, kind, entries, id);
-  const target = collections.find(c => c.id === res.target);
+  if (res.choice === "new") return createNew();
+  const target = importTargets().find(t => t.id === res.target);
   if (!target) return null;
   save(K.lastTarget, target.id);
   if (res.choice === "merge") {
-    const r = mergeInto(target, entries, kind);
-    saveCollections(); setView("c:" + target.id); reportMerge(r, target);
-    return null;   // already reported
+    const r = target.type === "c" ? mergeInto(target.obj, entries, asList ? "code" : kind) : mergeIntoList(target.obj, entries, from);
+    if (target.type === "c") saveCollections(); else saveLists();
+    setView(target.id); reportMerge(r, target);
+    return null;
   }
-  // replace: same collection (name, place in the list), new contents
-  const c = { id, title: target.title, kind, created: Date.now(), entries };
-  collections[collections.indexOf(target)] = c; saveCollections(); setView("c:" + id);
+  // replace: same collection/list (name, place), new contents
+  if (target.type === "l") { target.obj.items = entries.map(e => toListItem(e, from)); saveLists(); setView(target.id); return target.obj; }
+  const c = { id: hashStr(kind + title + Date.now()), title: target.title, kind: asList ? "code" : kind, created: Date.now(), entries };
+  collections[collections.indexOf(target.obj)] = c; saveCollections(); setView("c:" + c.id);
   return c;
 }
-/** A list received as a share code becomes an editable list again. */
-async function addListFromCode(name, entries) {
-  const items = entries.map(e => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finish, qty: e.qty, owned: e.qty, name: "", sid: "",
-    setName: "", rarity: "", binder: "", condition: "", language: "", from: "imported " + new Date().toLocaleDateString() }));
-  const clash = lists.find(l => l.name === name);
-  if (clash && contentKey(clash.items) === contentKey(items)) {
-    const again = await askChoice("Import the same list again?",
-      `This list is identical to your list “${name}” (${cardCount(items)} cards). Importing it again creates a duplicate list.\n\nAre you sure?`,
-      [["cancel", "Cancel", true], ["new", "Import anyway as a new list"]]);
-    if (again !== "new") { setView("l:" + clash.id); return null; }
-    const l = { id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: uniqueName(name, new Set(lists.map(x => x.name))), created: Date.now(), items };
-    lists.push(l); saveLists(); setView("l:" + l.id); return l;
-  }
-  if (clash) {
-    const choice = await askChoice(`The list “${name}” already exists`,
-      `Replace your list “${name}” (${cardCount(clash.items)} cards) with this version (${cardCount(items)} cards), or keep both?`, REPLACE_BUTTONS, K.choiceList);
-    if (!choice) return null;
-    if (choice === "replace") { clash.items = items; saveLists(); setView("l:" + clash.id); return clash; }
-    name = uniqueName(name, new Set(lists.map(l => l.name)));
-  }
-  const l = { id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, created: Date.now(), items };
-  lists.push(l); saveLists(); setView("l:" + l.id);
-  return l;
-}
+const addCollection = (title, kind, entries) => importCards(title, kind, entries, false);
+const addListFromCode = (name, entries) => importCards(name, "code", entries, true);
 
 // ------------------------------------------------------------------ lists
 function newList(suggest = "") {
