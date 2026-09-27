@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-15";
+const APP_VERSION = "2026.09.27-16";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -412,29 +412,40 @@ const REPLACE_BUTTONS = [["replace", "Replace", true], ["keep", "Keep both"], [n
 const contentKeyRows = arr => arr.map(e => rowKey(e) + "*" + e.qty).sort().join("\n");
 /** One physical ManaBox row: same printing, finish, binder, condition, language and "Added" timestamp. */
 const rowKey = e => [e.sid || e.k, e.finish, e.binder || "", e.condition || "", e.language || "", e.added || ""].join("|");
-/** Add the rows of a newer export to a collection: new rows are appended, known rows take the new quantity,
-    rows missing from the file are kept (use Replace to mirror the file exactly). */
-/** Merge modes: "missing" = only add what isn't there; "update" = add new + take changed quantities;
-    "all" = add everything, summing quantities of what's already there. */
+/** Merge modes (collections):
+    "missing" = add only printings (card + finish) the collection doesn't have at all, whatever binder, condition,
+                language or scan time the existing copies have;
+    "update"  = for a newer ManaBox export of the same collection: rows are matched exactly (same printing, finish,
+                binder, condition, language and "Added" time), known rows take the new quantity, other rows are added;
+                shares are matched by printing + finish;
+    "all"     = add everything, summing quantities into a matching row (same row, else same printing + condition +
+                language, else same printing). */
+const stackKey = e => [itemKey(e), e.condition || "", e.language || ""].join("|");
 function mergeInto(col, entries, kind = "csv", mode = "update") {
-  const key = kind === "csv" && col.kind === "csv" ? rowKey : itemKey;
-  const byKey = new Map(col.entries.map(e => [key(e), e]));
+  const byRow = kind === "csv" && col.kind === "csv";
+  const rows = new Map(), stacks = new Map(), items = new Map();
+  const index = e => { rows.set(rowKey(e), e); if (!stacks.has(stackKey(e))) stacks.set(stackKey(e), e); if (!items.has(itemKey(e))) items.set(itemKey(e), e); };
+  col.entries.forEach(index);
   let added = 0, updated = 0, same = 0;
+  const push = e => { const n = { ...e }; col.entries.push(n); index(n); added++; };
   for (const e of entries) {
-    const old = byKey.get(key(e));
-    if (!old) { const n = { ...e }; col.entries.push(n); byKey.set(key(e), n); added++; }
-    else if (mode === "all") { old.qty += e.qty; updated++; }
-    else if (mode === "update" && old.qty !== e.qty) { old.qty = e.qty; updated++; }
+    if (mode === "missing") { if (items.has(itemKey(e))) same++; else push(e); continue; }
+    if (mode === "all") {
+      const old = (byRow && rows.get(rowKey(e))) || stacks.get(stackKey(e)) || items.get(itemKey(e));
+      if (old) { old.qty += e.qty; updated++; } else push(e);
+      continue;
+    }
+    const old = byRow ? rows.get(rowKey(e)) : items.get(itemKey(e));
+    if (!old) push(e);
+    else if (old.qty !== e.qty) { old.qty = e.qty; updated++; }
     else same++;
   }
   return { added, updated, same, mode };
 }
-/** How many entries of `entries` are already in collection c. ManaBox CSVs are compared row by row (each row has a
-    unique "Added" time); anything involving a share code is compared by printing + finish. */
-function overlap(c, entries, kind) {
-  const byRow = kind === "csv" && c.kind === "csv", key = byRow ? rowKey : itemKey;
-  const keys = new Set(entries.map(key));
-  return c.entries.reduce((n, e) => n + (keys.has(key(e)) ? 1 : 0), 0);
+/** How many entries of collection c have a printing + finish that is also in `entries`. */
+function overlap(c, entries) {
+  const keys = new Set(entries.map(itemKey));
+  return c.entries.reduce((n, e) => n + (keys.has(itemKey(e)) ? 1 : 0), 0);
 }
 function createCollection(title, kind, entries, id) {
   const c = { id: id || hashStr(kind + title + Date.now()), title: uniqueName(title, new Set(collections.map(x => x.title))), kind, created: Date.now(), entries };
@@ -474,15 +485,19 @@ function isIdentical(t, entries, kind) {
   if (t.type === "c" && t.obj.kind === "csv" && kind === "csv") return contentKeyRows(t.entries) === contentKeyRows(entries);
   return contentKey(t.entries) === contentKey(entries);
 }
-function overlapWith(t, entries, kind) {
-  if (t.type === "c") return overlap(t.obj, entries, kind);
+/** Cards in common, judged by printing + finish (binder, condition, language and scan time don't matter). */
+function overlapWith(t, entries) {
   const keys = new Set(entries.map(itemKey));
   return t.entries.reduce((n, e) => n + (keys.has(itemKey(e)) ? 1 : 0), 0);
 }
+/** How many imported entries are already in target t: `cards` by printing + finish; `rows` (ManaBox CSV into a
+    ManaBox collection only) by exact row, which is what "New cards and changed quantities" goes by. */
 function presentIn(t, entries, kind) {
-  const key = t.type === "c" && t.obj.kind === "csv" && kind === "csv" ? rowKey : itemKey;
-  const keys = new Set(t.entries.map(key));
-  return entries.reduce((n, e) => n + (keys.has(key(e)) ? 1 : 0), 0);
+  const items = new Set(t.entries.map(itemKey));
+  const cards = entries.reduce((n, e) => n + (items.has(itemKey(e)) ? 1 : 0), 0);
+  if (!(t.type === "c" && t.obj.kind === "csv" && kind === "csv")) return { cards, rows: null };
+  const rows = new Set(t.entries.map(rowKey));
+  return { cards, rows: entries.reduce((n, e) => n + (rows.has(rowKey(e)) ? 1 : 0), 0) };
 }
 const targetLabel = t => `${t.type === "c" ? "Collection" : "List"}: ${t.title} (${cardCount(t.entries)} cards)`;
 
@@ -517,13 +532,13 @@ async function importCards(title, kind, entries, asList = false) {
   // 2. / 3.
   // prefer the same type: a shared list's cards always come from some collection, so a list should match a list
   const wantType = asList ? "l" : "c";
-  const scored = targets.map(t => ({ t, n: overlapWith(t, entries, kind) }))
+  const scored = targets.map(t => ({ t, n: overlapWith(t, entries) }))
     .sort((a, b) => ((b.n > 0 && b.t.type === wantType) - (a.n > 0 && a.t.type === wantType)) || b.n - a.n);
   const best = scored[0].n > 0 ? scored[0] : null;
   const cur = currentView();
   const preselect = best?.t.id || targets.find(t => t.id === load(K.lastTarget, ""))?.id || (cur && targets.find(t => t.id === viewId)?.id) || targets[0].id;
   const text = best
-    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) shares ${best.n} entries with your ${best.t.type === "c" ? "collection" : "list"} “${best.t.title}”: it looks like a changed version of it.`
+    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) has cards in common with your ${best.t.type === "c" ? "collection" : "list"} “${best.t.title}”.`
     : `None of the ${entries.length} entries (${cardCount(entries)} cards) in this ${what} are in your existing collections or lists.`;
   const buttons = [["merge", "Merge into selected", true], ["new", newLabel]];
   if (best) buttons.push(["replace", "Replace selected"]);
@@ -535,10 +550,14 @@ async function importCards(title, kind, entries, asList = false) {
     buttons, best ? K.choiceUpdate : K.choiceNew,
     { label: "Into", options: targets.map(t => [t.id, targetLabel(t)]), value: preselect,
       hint: id => { const t = targets.find(x => x.id === id); if (!t) return "";
-        const n = presentIn(t, entries, kind); const m = entries.length - n;
-        return `${n} of the ${entries.length} imported entr${entries.length === 1 ? "y is" : "ies are"} already in “${t.title}”, ${m} ${m === 1 ? "is" : "are"} new.`; } },
+        const { cards: n, rows } = presentIn(t, entries, kind); const m = entries.length - n;
+        let h = `${n} of the ${entries.length} imported entr${entries.length === 1 ? "y is a card" : "ies are cards"} already in “${t.title}” (same printing and finish), ${m} ${m === 1 ? "is" : "are"} new.`;
+        if (rows !== null && n > rows) h += rows
+          ? ` Only ${rows} match its rows exactly; with “New cards and changed quantities” the other ${n - rows} are added as extra rows (another binder, condition, language or scan time).`
+          : ` None match its rows exactly, so this isn't a newer export of it: “New cards and changed quantities” would add those ${n} as extra rows (another binder, condition, language or scan time).`;
+        return h; } },
     { label: "When merging", rememberKey: K.mergeMode, value: load(K.mergeMode, "update"), options: [
-      ["missing", "<b>Only cards that aren't there yet</b> <span class=\"hint\">cards already there are left as they are</span>"],
+      ["missing", "<b>Only cards that aren't there yet</b> <span class=\"hint\">a card counts as there if the same printing and finish is, in any binder</span>"],
       ["update", "<b>New cards and changed quantities</b> <span class=\"hint\">best for a newer ManaBox export of the same collection</span>"],
       ["all", "<b>Everything, adding quantities together</b> <span class=\"hint\">for combining separate piles of cards</span>"]] });
   if (!res || res.choice === "cancel") return null;

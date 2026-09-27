@@ -28,16 +28,16 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 **Importing** a ManaBox CSV, a shared collection or a shared list, when you already have any collections or lists:
 1. **Exactly the same** as one of them, whatever the names: the site asks whether you're sure you want to import it again. **Cancel** is the default.
 2. **A changed version** of one of them: the site asks whether to **merge** it into a collection or list (the best match is preselected in a dropdown listing all your collections and lists) or **create a new** one. **Replace selected** is also offered; it's the only option that removes cards, such as ones you've sold.
-3. **No cards in common:** **merge** into any collection or list you pick, or **create a new** one.
+3. **No cards in common** (no printing and finish in common): **merge** into any collection or list you pick, or **create a new** one.
 
-**When merging**, choose how cards already in the target are handled. The dialog shows how many of the imported entries are already there, for whichever collection or list is selected.
-- **Only cards that aren't there yet:** existing cards are left as they are.
-- **New cards and changed quantities:** best for a newer ManaBox export of the same collection, where a rescanned duplicate raises a row's quantity.
-- **Everything, adding quantities together:** for combining separate piles of cards.
+**When merging**, choose how cards already in the target are handled. A card counts as already there when the same printing and finish is, in any binder, condition or language. The dialog shows how many of the imported entries are already there, for whichever collection or list is selected.
+- **Only cards that aren't there yet:** printings already there are skipped and left as they are.
+- **New cards and changed quantities:** best for a newer ManaBox export of the same collection. ManaBox rows are matched exactly (card, finish, binder, condition, language and "Added" time): a known row takes the new quantity, any other row is added. If the file's rows don't match the selected collection's, the dialog warns that this mode would add those cards as extra rows.
+- **Everything, adding quantities together:** for combining separate piles of cards. Copies are added to a matching entry (same row, else same printing, condition and language, else same printing) instead of creating a second one.
 
 The last mode used is remembered.
 
-Names never matter; the dropdown always offers all your collections and lists. A shared list prefers a matching list and a collection prefers a matching collection. Merging never removes anything. ManaBox CSVs are matched row by row, using each row's card, finish, binder, condition, language and "Added" time. Everything else is matched by printing and finish.
+Names never matter; the dropdown always offers all your collections and lists. A shared list prefers a matching list and a collection prefers a matching collection. Merging never removes anything.
 
 The site remembers your last choice for cases 2 and 3 separately and offers it as the default, so Enter repeats it. A list shared from a list imports as an editable list, so keeping the latest share image in a chat works as a sync between devices.
 
