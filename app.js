@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-10";
+const APP_VERSION = "2026.09.27-11";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -401,11 +401,25 @@ async function addCollection(title, kind, entries) {
   const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
   const existing = collections.find(x => x.id === id);
   if (existing) { setView("c:" + id); toast(`“${title}” is already imported and unchanged.`); return null; }   // null: nothing new to report
-  const clash = collections.find(x => x.title === title);
+  // Which existing collection is this? ManaBox names every export differently, so recognise the library by its
+  // rows (each has a unique "Added" time) and fall back to the name for share codes.
+  let clash = null, common = 0;
+  if (kind === "csv") {
+    const keys = new Set(entries.map(rowKey));
+    for (const c of collections.filter(x => x.kind === "csv")) {
+      const n = c.entries.reduce((s, e) => s + (keys.has(rowKey(e)) ? 1 : 0), 0);
+      if (n > common) { common = n; clash = c; }
+    }
+    if (clash && common < Math.max(1, 0.3 * Math.min(clash.entries.length, entries.length))) { clash = null; common = 0; }
+  }
+  clash ||= collections.find(x => x.title === title) || null;
   if (clash) {
     const canAdd = kind === "csv" && clash.kind === "csv";   // row identity needs ManaBox's per-row data
-    const choice = await askChoice(`“${title}” already exists`,
-      `You already have a collection called “${title}” (${cardCount(clash.entries)} cards). This file has ${cardCount(entries)} cards.` +
+    const why = common
+      ? `This file looks like a newer export of your collection “${clash.title}”: ${common} of its ${clash.entries.length} entries are the same.`
+      : `You already have a collection called “${clash.title}”.`;
+    const choice = await askChoice(common ? `Update “${clash.title}”?` : `“${title}” already exists`,
+      `${why} It has ${cardCount(clash.entries)} cards; this file has ${cardCount(entries)} cards.` +
       (canAdd ? "\n\nReplace: make the collection exactly this file.\nAdd new cards: add rows that aren't there yet and update changed quantities; nothing is removed.\nKeep both: import it as a separate collection." : "") +
       "\n\nYour lists are not affected.",
       canAdd ? [["replace", "Replace", true], ["add", "Add new cards"], ["keep", "Keep both"], [null, "Cancel"]] : REPLACE_BUTTONS,
@@ -420,6 +434,7 @@ async function addCollection(title, kind, entries) {
       return null;   // already reported
     }
     if (choice === "keep") title = uniqueName(title, new Set(collections.map(x => x.title)));
+    if (choice === "replace") title = clash.title;   // it's still the same collection, just newer
     const c = { id, title, kind, created: Date.now(), entries };
     if (choice === "replace") collections[collections.indexOf(clash)] = c; else collections.push(c);
     saveCollections(); setView("c:" + id); return c;

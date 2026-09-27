@@ -25,8 +25,8 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 - **Show owned in gallery** filters the collection down to the matching cards.
 - **Set aside owned…** puts the matching copies into a list, so you know what to pull from your binders.
 
-**Importing again:** re-importing an unchanged file, image or list does nothing. If one with the same name exists but differs, the site asks what to do:
-- **Replace:** make the collection exactly the new file. Cards no longer in the file are removed.
+**Importing again:** re-importing an unchanged file, image or list does nothing. A ManaBox CSV is recognized as a newer export of an existing collection by its contents, even if the file name differs, since ManaBox dates its export files. Share codes are matched by name. When there's a match, the site asks what to do:
+- **Replace:** make the collection exactly the new file, keeping the collection's current name. Cards no longer in the file are removed.
 - **Add new cards** (ManaBox CSVs only): add rows that aren't there yet and update changed quantities; nothing is removed. Ideal after scanning more cards: export your ManaBox library again and re-import it. Rows are recognized by card, finish, binder, condition, language and ManaBox's "Added" time, so overlapping exports never double-count.
 - **Keep both:** import it as a separate collection.
 
