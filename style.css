@@ -48,16 +48,18 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-si
 /* layout */
 .layout { flex: 1; display: flex; align-items: flex-start; }
 .sidebar {
-  position: sticky; top: 53px; width: 250px; flex: 0 0 250px; max-height: calc(100vh - 53px); overflow-y: auto;
+  position: sticky; top: 53px; width: 290px; flex: 0 0 290px; max-height: calc(100vh - 53px);
+  overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable;
   padding: 12px 14px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px;
 }
 .field input[type=search] { width: 100%; }
 .field.row { display: flex; align-items: center; gap: 8px; }
-.field.row label { flex: 0 0 64px; color: var(--muted); font-size: 13px; }
+.field.row label { flex: 0 0 68px; color: var(--muted); font-size: 13px; }
 .field.row select { flex: 1; min-width: 0; }
 fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 10px 10px; margin: 0; }
 legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
 .pips { display: flex; gap: 4px; margin-bottom: 8px; }
+.pips .pip { flex: 1 1 0; min-width: 0; max-width: 34px; aspect-ratio: 1; height: auto; }
 .pip { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-weight: 700; }
 .pip.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 #colorMode { width: 100%; }

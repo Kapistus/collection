@@ -3,6 +3,8 @@
 "use strict";
 
 // ------------------------------------------------------------------ constants
+// Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
+const APP_VERSION = "2026.09.27-4";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -1127,6 +1129,11 @@ function setupViews() {
 }
 
 async function init() {
+  // A stale cached copy of this file (or of index.html) would silently break newer buttons: say so instead.
+  const pageVersion = document.querySelector('meta[name="app-version"]')?.content;
+  if (pageVersion !== APP_VERSION) {
+    toast("The site was just updated: reload the page (Ctrl+F5) to get the latest version.", 15000);
+  }
   setupFilters(); setupViews(); setupGrid(); setupImport(); setupShare(); setupCompare();
   if (!currentView()) viewId = collections[0] ? "c:" + collections[0].id : lists[0] ? "l:" + lists[0].id : "";
   setView(viewId);

@@ -40,7 +40,7 @@ Title, set code, collector number, quantity and finish. Nothing else, so no pric
 2. In **Settings → Pages**, choose **Deploy from a branch**, then pick the branch and folder.
 3. Open `https://<user>.github.io/<repo>/`.
 
-There's no build step. To test locally, run `python3 -m http.server` in this folder and open `http://localhost:8000`. It has to be served over http, not opened as a file, because the QR reader loads a `.wasm` file.
+There's no build step. When you change `app.js` or `style.css`, bump the version in three places so browsers don't mix old and new files: `APP_VERSION` in `app.js`, and the `app-version` meta tag and `?v=` values in `index.html`. GitHub Pages lets browsers cache files for 10 minutes. To test locally, run `python3 -m http.server` in this folder and open `http://localhost:8000`. It has to be served over http, not opened as a file, because the QR reader loads a `.wasm` file.
 
 ## Scryfall usage
 
