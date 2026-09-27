@@ -15,7 +15,7 @@ const COLORS = "WUBRG";
 const RARITIES = ["common", "uncommon", "rare", "mythic", "special"];
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 4, bonus: 5 };
 const TYPES = ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"];
-const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom" };
+const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom", want: "bs.want" };
 
 // ------------------------------------------------------------------ small helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -310,7 +310,8 @@ let viewId = load(K.view, "");        // "c:<id>" or "l:<id>"
 let activeListId = load(K.active, "");
 const selected = new Set();
 let lastClicked = null;
-const F = { q: "", sort: "name", asc: true, set: "", kw: "", type: "", binder: "", colors: new Set(), mode: "any", rar: new Set(), foil: false };
+const F = { q: "", sort: "name", asc: true, set: "", kw: "", type: "", binder: "", colors: new Set(), mode: "any", rar: new Set(), foil: false,
+            want: null };   // want: Set of normalized card names (from Compare), or null
 const itemKey = e => `${e.k}|${e.finish}`;
 const saveCollections = () => save(K.cols, collections.map(c => ({ ...c, entries: c.entries.map(({ uid, notFound, ...e }) => e) })));
 const saveLists = () => save(K.lists, lists.map(l => ({ ...l, items: l.items.map(({ uid, notFound, ...e }) => e) })));
@@ -412,6 +413,7 @@ function sortKey(e) {
 }
 function matches(e) {
   const c = cardFor(e) || {};
+  if (F.want && !nameKeys(nameOf(e)).some(k => F.want.has(k))) return false;
   if (F.set && e.set !== F.set) return false;
   if (F.binder && (e.binder || "") !== F.binder) return false;
   if (F.foil && e.finish === "normal") return false;
@@ -515,6 +517,7 @@ function tileHTML(e, isList) {
 }
 function renderGrid() {
   const v = currentView(), shown = visibleEntries();
+  $("#wantChip").hidden = !F.want;
   $("#empty").hidden = !!v; $("#grid").hidden = !v;
   $("#grid").innerHTML = v ? shown.map(e => tileHTML(e, v.type === "l")).join("") : "";
   renderStats(shown);
@@ -944,6 +947,120 @@ function setupShare() {
   $("#codeOut").onfocus = ev => ev.target.select();
 }
 
+
+// ------------------------------------------------------------------ compare a want list
+/** Normalize a card name for matching: case, accents, apostrophes and spacing don't matter. */
+function normName(s) {
+  return String(s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/[’‘`´]/g, "'").replace(/[–—]/g, "-").replace(/\s+/g, " ").trim();
+}
+/** Keys a name can match on: the full name, and each face of a double-faced / split card. */
+function nameKeys(name) {
+  const full = normName(name), keys = [full];
+  if (full.includes("//")) for (const part of full.split("//")) keys.push(part.trim());
+  return keys;
+}
+/** Parses Cardmarket's copied format (quantity line, then name line) as well as "2 Name", "2x Name" or just "Name". */
+function parseWantList(text) {
+  const out = new Map(); let pending = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim(); if (!line) continue;
+    if (/^\d+\s*x?$/i.test(line)) { pending = parseInt(line, 10); continue; }
+    let qty = pending ?? 1, name = line;
+    const m = /^(\d+)\s*x?\s+(.+)$/i.exec(line);
+    if (m && pending === null) { qty = parseInt(m[1], 10); name = m[2]; }
+    pending = null;
+    name = name.replace(/\s*\((?:[^)]*)\)\s*$/, "").trim();   // drop a trailing "(SET)" if present
+    if (!name || qty <= 0) continue;
+    const k = normName(name), prev = out.get(k);
+    if (prev) prev.qty += qty; else out.set(k, { name, qty, key: k });
+  }
+  return [...out.values()];
+}
+function compareWant(wants, entries) {
+  const index = new Map();
+  for (const e of entries) for (const k of new Set(nameKeys(nameOf(e)))) {
+    if (!index.has(k)) index.set(k, []); index.get(k).push(e);
+  }
+  return wants.map(w => {
+    const owned = index.get(w.key) || [];
+    const have = owned.reduce((s, e) => s + e.qty, 0);
+    return { ...w, have, owned, status: have >= w.qty ? "have" : have > 0 ? "part" : "need" };
+  });
+}
+
+let compareState = null;
+function renderCompare() {
+  const s = compareState, out = $("#compareOut");
+  if (!s) { out.innerHTML = ""; return; }
+  const rows = s.rows, by = st => rows.filter(r => r.status === st);
+  const have = by("have"), part = by("part"), need = by("need");
+  const toBuy = rows.reduce((n, r) => n + Math.max(0, r.qty - r.have), 0);
+  const prints = r => r.owned.map(e => `${esc(e.set.toUpperCase())} #${esc(e.cn)}${e.finish !== "normal" ? " " + e.finish : ""}${e.qty > 1 ? " ×" + e.qty : ""}${e.binder ? " · " + esc(e.binder) : ""}`).join("<br>");
+  const section = (label, list, cls) => !list.length ? "" :
+    `<tr class="group"><td colspan="4"><span class="${cls}" style="border-radius:10px;padding:1px 8px">${label}</span> ${list.length}</td></tr>` +
+    list.map(r => `<tr><td>${esc(r.owned[0] ? nameOf(r.owned[0]) : r.name)}</td><td class="num">${r.qty}</td><td class="num">${r.have}</td>
+      <td class="prints">${r.owned.length ? prints(r) : "–"}</td></tr>`).join("");
+  out.innerHTML = `<div class="cmp-sum">
+      <span class="st-have">Already have: ${have.length}</span><span class="st-part">Partly: ${part.length}</span>
+      <span class="st-need">Need to buy: ${need.length}</span></div>
+    <p class="hint">${rows.length} different cards on the list · ${toBuy} cop${toBuy === 1 ? "y" : "ies"} still to buy · matched by card name, any printing or finish, against “${esc(s.against)}”.</p>
+    <table class="cmp-table"><thead><tr><th>Card</th><th class="num">Want</th><th class="num">Have</th><th>Your copies</th></tr></thead>
+    <tbody>${section("Need to buy", need, "st-need")}${section("Partly", part, "st-part")}${section("Already have", have, "st-have")}</tbody></table>`;
+  $("#copyToBuy").disabled = !toBuy;
+  $("#showOwned").disabled = $("#asideOwned").disabled = !(have.length + part.length);
+}
+async function runCompare() {
+  const msg = $("#compareMsg"); msg.className = "msg"; msg.textContent = "";
+  const wants = parseWantList($("#wantInput").value);
+  if (!wants.length) { msg.textContent = "Paste a want list first."; msg.className = "msg err"; return; }
+  save(K.want, $("#wantInput").value);
+  const col = collections.find(c => c.id === $("#wantAgainst").value);
+  if (!col) { msg.textContent = "Import a collection to compare against."; msg.className = "msg err"; return; }
+  if (col.entries.some(e => !e.name && !cardFor(e))) {       // imported codes carry no names: load them first
+    msg.textContent = "Loading card names from Scryfall…"; await fetchCards(col.entries); msg.textContent = "";
+  }
+  compareState = { rows: compareWant(wants, col.entries), against: col.title, colId: col.id };
+  renderCompare();
+}
+function setupCompare() {
+  $("#compareBtn").onclick = () => {
+    const sel = $("#wantAgainst"); sel.innerHTML = "";
+    for (const c of collections) sel.add(new Option(`${c.title} (${cardCount(c.entries)})`, c.id));
+    const v = currentView();
+    sel.value = v?.type === "c" ? v.obj.id : collections[0]?.id || "";
+    if (!$("#wantInput").value) $("#wantInput").value = load(K.want, "");
+    $("#compareMsg").textContent = collections.length ? "" : "Import a collection first: this compares a want list against it.";
+    renderCompare(); $("#compareDlg").showModal();
+  };
+  $("#runCompare").onclick = runCompare;
+  $("#wantAgainst").onchange = () => { if (compareState) runCompare(); };
+  $("#copyToBuy").onclick = async () => {
+    const lines = compareState.rows.filter(r => r.qty > r.have).map(r => `${r.qty - r.have} ${r.name}`);
+    try { await navigator.clipboard.writeText(lines.join("\n")); $("#compareMsg").textContent = `Copied ${lines.length} line${lines.length === 1 ? "" : "s"}: paste them into your Cardmarket want list.`; }
+    catch { $("#compareMsg").textContent = "Copying was blocked by the browser."; }
+  };
+  $("#showOwned").onclick = () => {
+    const keys = new Set(compareState.rows.filter(r => r.have).map(r => r.key));
+    closeDlg("#compareDlg");
+    if (viewId !== "c:" + compareState.colId) setView("c:" + compareState.colId);
+    F.want = keys; renderGrid();
+  };
+  $("#asideOwned").onclick = () => {
+    const l = newList("Pull for want list"); if (!l) return;
+    if (viewId !== "c:" + compareState.colId) setView("c:" + compareState.colId);
+    // one set-aside per wanted copy, taken from your printings in order, up to the wanted quantity
+    const picks = [];
+    for (const r of compareState.rows) {
+      let left = Math.min(r.qty, r.have);
+      for (const e of r.owned) { const n = Math.min(left, e.qty); for (let i = 0; i < n; i++) picks.push(e); left -= n; if (!left) break; }
+    }
+    setAside(picks, l.id);
+    closeDlg("#compareDlg");
+  };
+  $("#wantChipClear").onclick = () => { F.want = null; renderGrid(); };
+}
+
 // ------------------------------------------------------------------ setup
 function setupFilters() {
   const pips = $("#pips");
@@ -969,7 +1086,7 @@ function setupFilters() {
   bind("#fSet", "set"); bind("#fKeyword", "kw"); bind("#fType", "type"); bind("#fBinder", "binder"); bind("#colorMode", "mode");
   $("#fFoil").onchange = ev => { F.foil = ev.target.checked; renderGrid(); };
   $("#clearFilters").onclick = () => {
-    Object.assign(F, { q: "", set: "", kw: "", type: "", binder: "", mode: "any", foil: false });
+    Object.assign(F, { q: "", set: "", kw: "", type: "", binder: "", mode: "any", foil: false, want: null });
     F.colors.clear(); F.rar.clear();
     $("#q").value = ""; $("#fType").value = ""; $("#colorMode").value = "any"; $("#fFoil").checked = false;
     document.querySelectorAll(".pip").forEach(p => p.classList.remove("on"));
@@ -1010,7 +1127,7 @@ function setupViews() {
 }
 
 async function init() {
-  setupFilters(); setupViews(); setupGrid(); setupImport(); setupShare();
+  setupFilters(); setupViews(); setupGrid(); setupImport(); setupShare(); setupCompare();
   if (!currentView()) viewId = collections[0] ? "c:" + collections[0].id : lists[0] ? "l:" + lists[0].id : "";
   setView(viewId);
   // opened from a share link?

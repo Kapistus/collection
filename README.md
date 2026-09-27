@@ -18,6 +18,12 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
   - When the whole link fits in one QR code (up to about 850 entries), the QR code contains the link itself, so scanning it with a phone camera opens the site with the cards.
 - **Receive** by dropping or pasting (Ctrl+V) either share image on the page, choosing it with **Import**, opening the link, scanning the QR code with a phone, or pasting the code into **Import**.
 
+**Compare a want list:** copy a want list from Cardmarket, paste it into **Compare**, and pick a collection. The site sorts the cards into *already have*, *partly* and *need to buy*.
+- Cards are matched by name, so any printing or finish counts. Double-faced cards match by either face.
+- **Copy cards to buy** copies what's still missing, one `quantity name` per line.
+- **Show owned in gallery** filters the collection down to the matching cards.
+- **Set aside owned…** puts the matching copies into a list, so you know what to pull from your binders.
+
 A share image still imports after chat apps shrink it and convert it to JPEG. In testing, a full 732-entry collection decoded exactly from a 745 px wide JPEG.
 
 ## What the share code contains

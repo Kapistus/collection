@@ -197,3 +197,22 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
   .zoom { display: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 44vw), 1fr)); }
 }
+
+/* compare */
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent); color: var(--accent-fg); border-radius: 14px; padding: 2px 4px 2px 10px; font-size: 13px; }
+.chip button { color: var(--accent-fg); border-color: transparent; }
+.compare-in { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; }
+.compare-in textarea { width: 100%; font-size: 13px; }
+.compare-side { display: flex; flex-direction: column; gap: 8px; min-width: 220px; }
+.cmp-sum { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.cmp-sum span { border-radius: 14px; padding: 3px 12px; font-weight: 600; font-size: 14px; }
+.st-have { background: #2e7d32; color: #fff; }
+.st-part { background: #b26a00; color: #fff; }
+.st-need { background: var(--line); color: var(--fg); }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+.cmp-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12.5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.cmp-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cmp-table td.num { text-align: right; white-space: nowrap; }
+.cmp-table .prints { color: var(--muted); font-size: 12.5px; }
+.cmp-table tr.group td { background: var(--bg); font-weight: 700; }
+.cmp-table th.num { text-align: right; }

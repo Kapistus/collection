@@ -19,6 +19,7 @@
   <div class="actions">
     <button id="importBtn" class="primary">Import</button>
     <button id="shareBtn">Share</button>
+    <button id="compareBtn" title="Check a want list against a collection">Compare</button>
     <button id="filtersToggle" class="only-narrow">Filters</button>
   </div>
 </header>
@@ -75,6 +76,7 @@
     <div class="statusbar">
       <span id="stats"></span>
       <span id="progress" hidden></span>
+      <span id="wantChip" class="chip" hidden>Only cards on your want list <button id="wantChipClear" class="ghost small">Show all</button></span>
       <label class="zoom" title="Card size">Size <input id="zoom" type="range" min="100" max="260" value="160"></label>
     </div>
     <div id="empty" class="empty" hidden>
@@ -149,6 +151,32 @@
     <span id="shareMsg" class="msg grow"></span>
     <button id="copyImg" class="primary">Copy image</button>
     <button id="downloadImg">Download PNG</button>
+    <button data-close>Close</button>
+  </div>
+</dialog>
+
+<!-- compare want list -->
+<dialog id="compareDlg" class="dlg wide">
+  <h2>Compare a want list</h2>
+  <div class="dlg-body">
+    <div class="compare-in">
+      <div class="grow">
+        <label for="wantInput" class="sidelabel">Want list: copy it from Cardmarket (or type lines like “2 Sol Ring”) and paste here</label>
+        <textarea id="wantInput" rows="7" placeholder="1&#10;Bloodstained Mire&#10;&#10;2 Sol Ring"></textarea>
+      </div>
+      <div class="compare-side">
+        <label for="wantAgainst" class="sidelabel">Compare against</label>
+        <select id="wantAgainst"></select>
+        <button id="runCompare" class="primary">Compare</button>
+      </div>
+    </div>
+    <p id="compareMsg" class="msg"></p>
+    <div id="compareOut"></div>
+  </div>
+  <div class="dlg-foot">
+    <button id="copyToBuy" disabled title="Cards you still need, one “quantity name” per line">Copy cards to buy</button>
+    <button id="showOwned" disabled>Show owned in gallery</button>
+    <button id="asideOwned" disabled title="Put the copies you own into a list, so you know what to pull from your binders">Set aside owned…</button>
     <button data-close>Close</button>
   </div>
 </dialog>
