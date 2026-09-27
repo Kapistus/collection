@@ -25,12 +25,14 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 - **Show owned in gallery** filters the collection down to the matching cards.
 - **Set aside owned…** puts the matching copies into a list, so you know what to pull from your binders.
 
-**Importing again:** re-importing an unchanged file says it's already up to date, with an option to import it separately anyway. A ManaBox CSV is recognized as a newer export of an existing collection by its contents, even if the file name differs, since ManaBox dates its export files. A CSV is also matched to a collection that arrived as a share image, when most of the printings are the same. Otherwise share codes are matched by name. When there's a match, the site asks what to do:
-- **Replace:** make the collection exactly the new file, keeping the collection's current name. Cards no longer in the file are removed.
-- **Add new cards** (ManaBox CSVs only): add rows that aren't there yet and update changed quantities; nothing is removed. Ideal after scanning more cards: export your ManaBox library again and re-import it. Rows are recognized by card, finish, binder, condition, language and ManaBox's "Added" time, so overlapping exports never double-count.
-- **Keep both:** import it as a separate collection.
+**Importing a collection** (ManaBox CSV or a shared collection) when you already have collections:
+1. **Exactly the same** as an existing collection, even under another file name: the site asks whether you're sure you want to import it again. **Cancel** is the default.
+2. **A changed version** of an existing collection: the site asks whether to **merge** it into a collection (the matching one is preselected in a dropdown) or **create a new** collection. **Replace selected** is also offered, for making the collection exactly the new file; it's the only option that removes cards, such as ones you've sold.
+3. **No cards in common,** for example new scans exported separately or a friend's collection: **merge** into a collection you pick, or **create a new** one.
 
-The site remembers your last choice and offers it as the default, so Enter repeats it. A list shared from a list imports as an editable list, so keeping the latest share image in a chat works as a sync between devices.
+Merging adds entries that aren't in the collection yet and updates changed quantities; it never removes anything. ManaBox CSVs are matched row by row, using each row's card, finish, binder, condition, language and "Added" time, so repeated or overlapping exports never double-count. Shared collections are matched by printing and finish.
+
+The site remembers your last choice for cases 2 and 3 separately and offers it as the default, so Enter repeats it. A list shared from a list imports as an editable list, so keeping the latest share image in a chat works as a sync between devices.
 
 **Export** (for the cards currently shown) has four formats:
 - **ManaBox CSV:** the same columns as ManaBox's own export.

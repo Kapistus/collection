@@ -253,3 +253,6 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .pip:hover { border-color: var(--full); }
 .pip.on { background: var(--full); color: var(--on-fg); border-color: var(--ring, var(--full)); box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--ring, var(--full)); }
 @media (prefers-color-scheme: dark) { .pip[data-c="B"] { --ring: #cfc6c1; } }
+.ask-select { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.ask-select label { color: var(--muted); font-size: 13.5px; }
+.ask-select select { flex: 1; min-width: 0; }

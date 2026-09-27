@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-12";
+const APP_VERSION = "2026.09.27-13";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -18,7 +18,7 @@ const RARITIES = ["common", "uncommon", "rare", "mythic", "special"];
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 4, bonus: 5 };
 const TYPES = ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"];
 const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom", want: "bs.want",
-            choiceCollection: "bs.choice.collection", choiceList: "bs.choice.list" };
+            choiceUpdate: "bs.choice.update", choiceNew: "bs.choice.new", choiceList: "bs.choice.list", lastTarget: "bs.lastTarget" };
 
 // ------------------------------------------------------------------ small helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -361,12 +361,19 @@ function setView(id) {
 
 /** Ask with custom buttons; resolves to the chosen value, or null if dismissed.
     With rememberKey, the previous answer becomes the highlighted default (Enter repeats it) and a new answer is saved. */
-function askChoice(title, text, buttons, rememberKey = null) {
+function askChoice(title, text, buttons, rememberKey = null, select = null) {
   return new Promise(resolve => {
     const d = $("#askDlg"), box = $("#askBtns");
     $("#askTitle").textContent = title; $("#askText").textContent = text; box.innerHTML = "";
+    const wrap = $("#askSelectWrap"), sel = $("#askSelect");
+    wrap.hidden = !select;
+    if (select) {
+      $("#askSelectLabel").textContent = select.label; sel.innerHTML = "";
+      for (const [v, l] of select.options) sel.add(new Option(l, v));
+      sel.value = select.value;
+    }
     const last = rememberKey ? load(rememberKey, null) : null;
-    const preferred = buttons.some(([v]) => v !== null && v === last) ? last : buttons.find(b => b[2])?.[0];
+    const preferred = buttons.some(([v]) => v !== null && v !== "cancel" && v === last) ? last : buttons.find(b => b[2])?.[0];
     let result = null, focusBtn = null;
     for (const [value, label] of buttons) {
       const b = document.createElement("button");
@@ -374,7 +381,11 @@ function askChoice(title, text, buttons, rememberKey = null) {
       if (value !== null && value === preferred) { b.className = "primary"; focusBtn = b; }
       b.onclick = () => { result = value; d.close(); }; box.append(b);
     }
-    d.addEventListener("close", () => { if (rememberKey && result) save(rememberKey, result); resolve(result); }, { once: true });
+    d.addEventListener("close", () => {
+      if (result === "cancel") result = null;
+      if (rememberKey && result) save(rememberKey, result);
+      resolve(select ? (result ? { choice: result, target: sel.value } : null) : result);
+    }, { once: true });
     d.showModal(); focusBtn?.focus();
   });
 }
@@ -387,79 +398,85 @@ const contentKeyRows = arr => arr.map(e => rowKey(e) + "*" + e.qty).sort().join(
 const rowKey = e => [e.sid || e.k, e.finish, e.binder || "", e.condition || "", e.language || "", e.added || ""].join("|");
 /** Add the rows of a newer export to a collection: new rows are appended, known rows take the new quantity,
     rows missing from the file are kept (use Replace to mirror the file exactly). */
-function mergeInto(col, entries) {
-  const byKey = new Map(col.entries.map(e => [rowKey(e), e]));
+function mergeInto(col, entries, kind = "csv") {
+  const key = kind === "csv" && col.kind === "csv" ? rowKey : itemKey;
+  const byKey = new Map(col.entries.map(e => [key(e), e]));
   let added = 0, updated = 0, same = 0;
   for (const e of entries) {
-    const old = byKey.get(rowKey(e));
-    if (!old) { col.entries.push(e); byKey.set(rowKey(e), e); added++; }
+    const old = byKey.get(key(e));
+    if (!old) { col.entries.push(e); byKey.set(key(e), e); added++; }
     else if (old.qty !== e.qty) { old.qty = e.qty; updated++; }
     else same++;
   }
   return { added, updated, same };
 }
+/** How many entries of `entries` are already in collection c. ManaBox CSVs are compared row by row (each row has a
+    unique "Added" time); anything involving a share code is compared by printing + finish. */
+function overlap(c, entries, kind) {
+  const byRow = kind === "csv" && c.kind === "csv", key = byRow ? rowKey : itemKey;
+  const keys = new Set(entries.map(key));
+  return c.entries.reduce((n, e) => n + (keys.has(key(e)) ? 1 : 0), 0);
+}
+function createCollection(title, kind, entries, id) {
+  const c = { id: id || hashStr(kind + title + Date.now()), title: uniqueName(title, new Set(collections.map(x => x.title))), kind, created: Date.now(), entries };
+  collections.push(c); saveCollections(); setView("c:" + c.id);
+  return c;
+}
+const reportMerge = (r, target) => toast(r.added || r.updated
+  ? `Merged into “${target.title}”: added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` + (r.updated ? `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}` : "") + ` · ${r.same} unchanged.`
+  : `Nothing new: all ${r.same} entries were already in “${target.title}”.`, 6000);
+
+/** Import a collection (ManaBox CSV or share code):
+    1. identical to an existing collection -> ask if you really want to import the same thing again
+    2. overlaps an existing collection     -> merge into it (selectable), create a new one, or replace
+    3. no overlap                          -> merge into a collection you choose, or create a new one */
 async function addCollection(title, kind, entries) {
   const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
-  const existing = collections.find(x => x.id === id) ||
-    // same rows under another file name (ManaBox dates its exports) counts as unchanged too
-    (kind === "csv" && collections.find(x => x.kind === "csv" && x.entries.length === entries.length &&
-      contentKeyRows(x.entries) === contentKeyRows(entries)));
-  if (existing) {
-    setView("c:" + existing.id);
-    const choice = await askChoice(`“${existing.title}” is already up to date`,
-      `This file has exactly the same ${entries.length} entries (${cardCount(entries)} cards) as your collection “${existing.title}”, so there is nothing new to add.`,
-      [["ok", "OK", true], ["keep", "Import as a separate collection"]]);
-    if (choice !== "keep") return null;
-    const c = { id: id + "-" + Date.now().toString(36), title: uniqueName(title, new Set(collections.map(x => x.title))), kind, created: Date.now(), entries };
-    collections.push(c); saveCollections(); setView("c:" + c.id); return c;
+  const what = kind === "csv" ? "file" : "shared collection";
+  if (!collections.length) return createCollection(title, kind, entries, id);
+
+  // 1. exactly the same
+  const same = collections.find(x => x.id === id) || collections.find(x => x.entries.length === entries.length &&
+    (kind === "csv" && x.kind === "csv" ? contentKeyRows(x.entries) === contentKeyRows(entries) : contentKey(x.entries) === contentKey(entries)));
+  if (same) {
+    const choice = await askChoice("Import the same collection again?",
+      `This ${what} is identical to your collection “${same.title}” (${same.entries.length} entries, ${cardCount(same.entries)} cards). Importing it again creates a duplicate collection.\n\nAre you sure?`,
+      [["cancel", "Cancel", true], ["new", "Import anyway as a new collection"]]);
+    if (choice !== "new") { setView("c:" + same.id); return null; }
+    return createCollection(title, kind, entries);
   }
-  // Which existing collection is this? ManaBox names every export differently, so recognise the library by its
-  // rows (each has a unique "Added" time) and fall back to the name for share codes.
-  let clash = null, common = 0;
-  if (kind === "csv") {
-    const keys = new Set(entries.map(rowKey));
-    for (const c of collections.filter(x => x.kind === "csv")) {
-      const n = c.entries.reduce((s, e) => s + (keys.has(rowKey(e)) ? 1 : 0), 0);
-      if (n > common) { common = n; clash = c; }
-    }
-    if (clash && common < Math.max(1, 0.3 * Math.min(clash.entries.length, entries.length))) { clash = null; common = 0; }
-    if (!clash) {   // a collection received as a share image has no ManaBox rows: compare printings instead
-      const prints = new Set(entries.map(itemKey));
-      for (const c of collections.filter(x => x.kind === "code")) {
-        const n = c.entries.reduce((s, e) => s + (prints.has(itemKey(e)) ? 1 : 0), 0);
-        if (n > common && n >= 0.6 * Math.min(c.entries.length, prints.size)) { common = n; clash = c; }
-      }
-    }
+
+  // 2. / 3. changed version of an existing collection, or completely new cards
+  const scored = collections.map(c => ({ c, n: overlap(c, entries, kind) })).sort((a, b) => b.n - a.n);
+  const best = scored[0].n > 0 ? scored[0] : null;
+  const current = currentView()?.type === "c" ? currentView().obj : null;
+  const lastTarget = collections.find(c => c.id === load(K.lastTarget, ""));
+  const preselect = (best?.c || lastTarget || current || collections[0]).id;
+  const options = collections.map(c => [c.id, `${c.title} (${cardCount(c.entries)} cards)`]);
+  const text = best
+    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) shares ${best.n} entries with your collection “${best.c.title}”: it looks like a changed version of it.`
+    : `None of the ${entries.length} entries (${cardCount(entries)} cards) in this ${what} are in your existing collections.`;
+  const buttons = [["merge", "Merge into selected", true], ["new", "Create new collection"]];
+  if (best) buttons.push(["replace", "Replace selected"]);
+  buttons.push(["cancel", "Cancel"]);
+  const res = await askChoice(best ? "Update an existing collection?" : "Merge or create a new collection?",
+    text + "\n\nMerge adds cards that aren't in the selected collection yet and updates changed quantities; nothing is removed." +
+    (best ? "\nReplace makes the selected collection exactly this " + what + " (cards not in it are removed)." : "") +
+    "\nYour lists are not affected.",
+    buttons, best ? K.choiceUpdate : K.choiceNew, { label: "Collection", options, value: preselect });
+  if (!res || res.choice === "cancel") return null;
+  if (res.choice === "new") return createCollection(title, kind, entries, id);
+  const target = collections.find(c => c.id === res.target);
+  if (!target) return null;
+  save(K.lastTarget, target.id);
+  if (res.choice === "merge") {
+    const r = mergeInto(target, entries, kind);
+    saveCollections(); setView("c:" + target.id); reportMerge(r, target);
+    return null;   // already reported
   }
-  clash ||= collections.find(x => x.title === title) || null;
-  if (clash) {
-    const canAdd = kind === "csv" && clash.kind === "csv";   // row identity needs ManaBox's per-row data
-    const why = common
-      ? `This file looks like a newer export of your collection “${clash.title}”: ${common} of its ${clash.entries.length} entries are the same.`
-      : `You already have a collection called “${clash.title}”.`;
-    const choice = await askChoice(common ? `Update “${clash.title}”?` : `“${title}” already exists`,
-      `${why} It has ${cardCount(clash.entries)} cards; this file has ${cardCount(entries)} cards.` +
-      (canAdd ? "\n\nReplace: make the collection exactly this file.\nAdd new cards: add rows that aren't there yet and update changed quantities; nothing is removed.\nKeep both: import it as a separate collection." : "") +
-      "\n\nYour lists are not affected.",
-      canAdd ? [["replace", "Replace", true], ["add", "Add new cards"], ["keep", "Keep both"], [null, "Cancel"]] : REPLACE_BUTTONS,
-      K.choiceCollection);
-    if (!choice) return null;
-    if (choice === "add" && canAdd) {
-      const r = mergeInto(clash, entries);
-      saveCollections(); setView("c:" + clash.id);
-      toast(r.added || r.updated
-        ? `Added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` + (r.updated ? `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}` : "") + ` · ${r.same} unchanged.`
-        : `No new cards: all ${r.same} entries were already in “${clash.title}”.`, 6000);
-      return null;   // already reported
-    }
-    if (choice === "keep") title = uniqueName(title, new Set(collections.map(x => x.title)));
-    if (choice === "replace") title = clash.title;   // it's still the same collection, just newer
-    const c = { id, title, kind, created: Date.now(), entries };
-    if (choice === "replace") collections[collections.indexOf(clash)] = c; else collections.push(c);
-    saveCollections(); setView("c:" + id); return c;
-  }
-  const c = { id, title, kind, created: Date.now(), entries };
-  collections.push(c); saveCollections(); setView("c:" + id);
+  // replace: same collection (name, place in the list), new contents
+  const c = { id, title: target.title, kind, created: Date.now(), entries };
+  collections[collections.indexOf(target)] = c; saveCollections(); setView("c:" + id);
   return c;
 }
 /** A list received as a share code becomes an editable list again. */
@@ -467,7 +484,14 @@ async function addListFromCode(name, entries) {
   const items = entries.map(e => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finish, qty: e.qty, owned: e.qty, name: "", sid: "",
     setName: "", rarity: "", binder: "", condition: "", language: "", from: "imported " + new Date().toLocaleDateString() }));
   const clash = lists.find(l => l.name === name);
-  if (clash && contentKey(clash.items) === contentKey(items)) { setView("l:" + clash.id); toast(`The list “${name}” is already up to date.`); return null; }
+  if (clash && contentKey(clash.items) === contentKey(items)) {
+    const again = await askChoice("Import the same list again?",
+      `This list is identical to your list “${name}” (${cardCount(items)} cards). Importing it again creates a duplicate list.\n\nAre you sure?`,
+      [["cancel", "Cancel", true], ["new", "Import anyway as a new list"]]);
+    if (again !== "new") { setView("l:" + clash.id); return null; }
+    const l = { id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: uniqueName(name, new Set(lists.map(x => x.name))), created: Date.now(), items };
+    lists.push(l); saveLists(); setView("l:" + l.id); return l;
+  }
   if (clash) {
     const choice = await askChoice(`The list “${name}” already exists`,
       `Replace your list “${name}” (${cardCount(clash.items)} cards) with this version (${cardCount(items)} cards), or keep both?`, REPLACE_BUTTONS, K.choiceList);
