@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Binder Share</title>
 <meta name="description" content="View, filter and share Magic: The Gathering collections from ManaBox CSV exports. No accounts, nothing stored on a server.">
-<meta name="app-version" content="2026.09.27-4">
-<link rel="stylesheet" href="style.css?v=2026.09.27-4">
+<meta name="app-version" content="2026.09.27-5">
+<link rel="stylesheet" href="style.css?v=2026.09.27-5">
 </head>
 <body>
 <header class="topbar">
@@ -76,6 +76,7 @@
   <main>
     <div class="statusbar">
       <span id="stats"></span>
+      <span id="priceNote" class="pricenote" hidden><span id="priceWhen"></span> <button id="refreshPrices" class="ghost small" title="Fetch current prices from Scryfall">Refresh</button></span>
       <span id="progress" hidden></span>
       <span id="wantChip" class="chip" hidden>Only cards on your want list <button id="wantChipClear" class="ghost small">Show all</button></span>
       <label class="zoom" title="Card size">Size <input id="zoom" type="range" min="100" max="260" value="160"></label>
@@ -188,6 +189,6 @@
 
 <script src="vendor/qrcode-generator.js?v=2.0.4"></script>
 <script src="vendor/zxing-reader.js?v=3.1.4"></script>
-<script src="app.js?v=2026.09.27-4"></script>
+<script src="app.js?v=2026.09.27-5"></script>
 </body>
 </html>

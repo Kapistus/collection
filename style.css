@@ -218,3 +218,5 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .cmp-table .prints { color: var(--muted); font-size: 12.5px; }
 .cmp-table tr.group td { background: var(--bg); font-weight: 700; }
 .cmp-table th.num { text-align: right; }
+.pricenote { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.statusbar #stats { color: var(--fg); }

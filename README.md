@@ -46,6 +46,8 @@ There's no build step. When you change `app.js` or `style.css`, bump the version
 
 - Card data comes from `POST /cards/collection` in batches of up to 75, with 100 ms between requests.
 - Data is cached in the browser for 24 hours; Scryfall updates prices daily.
+- **Prices:** Scryfall's EUR price, which is Cardmarket's Trend Price. When a card has no trend, Scryfall falls back to Cardmarket's 1-day average, 7-day average, average or suggested price. Foils use the foil trend. Cards with no EUR price at all show Scryfall's USD price instead, marked with $.
+- The status bar shows the value of the whole collection or list (and of the filtered cards, when a filter is on) and when the prices were fetched. **Refresh** refetches prices older than an hour.
 - Images load from Scryfall's image servers.
 
 ## Third-party code (in `vendor/`)

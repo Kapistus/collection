@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-4";
+const APP_VERSION = "2026.09.27-5";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -141,13 +141,13 @@ const fmtPrice = (v, cur) => v === null ? "–" : (cur === "eur" ? "€" : "$") 
 const nameOf = e => e.name || cardFor(e)?.name || `${e.set.toUpperCase()} #${e.cn}`;
 
 let fetching = false;
-async function fetchCards(entries, { force = false } = {}) {
+async function fetchCards(entries, { force = false, olderThan = CARD_TTL } = {}) {
   if (fetching) return;
   const now = Date.now(), seen = new Set(), todo = [];
   for (const e of entries) {
     if (seen.has(e.k)) continue; seen.add(e.k);
     const hit = cardCache[e.k];
-    if (!hit || force || now - hit.t > CARD_TTL) todo.push(e);
+    if (!hit || (force && now - hit.t > olderThan) || now - hit.t > CARD_TTL) todo.push(e);
   }
   if (!todo.length) return;
   fetching = true;
@@ -489,19 +489,45 @@ function renderActiveList() {
   $("#setAsideBox").hidden = !v || v.type !== "c";
   $("#listBox").hidden = !v || v.type !== "l";
 }
-function renderStats(shown) {
-  const v = currentView(); if (!v) { $("#stats").textContent = ""; return; }
-  let eur = 0, usd = 0, paid = 0, hasPaid = false;
-  for (const e of shown) {
+/** Value of entries: Cardmarket trend in EUR; cards with no EUR price fall back to USD and are summed separately. */
+function valueOf(entries) {
+  let eur = 0, usd = 0, missing = 0, paid = 0, hasPaid = false;
+  for (const e of entries) {
     const [p, cur] = priceOf(e);
-    if (p !== null) { if (cur === "eur") eur += p * e.qty; else usd += p * e.qty; }
+    if (p === null) missing += e.qty; else if (cur === "eur") eur += p * e.qty; else usd += p * e.qty;
     if (e.paid != null) { paid += e.paid * e.qty; hasPaid = true; }
   }
-  const parts = [`${shown.length} of ${v.entries.length} entries`, `${cardCount(shown)} cards`,
-    `≈ €${eur.toFixed(2)}${usd ? ` + $${usd.toFixed(2)}` : ""} (Cardmarket via Scryfall)`];
-  if (hasPaid && v.type === "c") parts.push(`paid ${paid.toFixed(2)}`);
+  return { eur, usd, missing, paid, hasPaid };
+}
+const fmtValue = v => `€${v.eur.toFixed(2)}` + (v.usd ? ` + $${v.usd.toFixed(2)}` : "");
+function fmtTime(t) {
+  const d = new Date(t), p = n => String(n).padStart(2, "0");
+  return `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+/** Oldest and newest time the shown cards' prices were fetched from Scryfall. */
+function fetchedRange(entries) {
+  let lo = Infinity, hi = 0;
+  for (const e of entries) { const t = cardCache[e.k]?.t; if (t) { lo = Math.min(lo, t); hi = Math.max(hi, t); } }
+  return hi ? [lo, hi] : null;
+}
+function renderStats(shown) {
+  const v = currentView();
+  if (!v) { $("#stats").textContent = ""; $("#priceNote").hidden = true; return; }
+  const all = valueOf(v.entries), vis = valueOf(shown), filtered = shown.length < v.entries.length;
+  const label = v.type === "c" ? "collection" : "list";
+  const parts = [`${shown.length} of ${v.entries.length} entries`, `${cardCount(shown)} cards`];
+  parts.push(filtered ? `shown ${fmtValue(vis)} · whole ${label} ${fmtValue(all)}` : `${label} value ${fmtValue(all)}`);
+  if (all.hasPaid && v.type === "c") parts.push(`paid ${(filtered ? vis : all).paid.toFixed(2)}`);
   if (selected.size) parts.push(`${selected.size} selected`);
   $("#stats").textContent = parts.join(" · ");
+  const r = fetchedRange(v.entries), note = $("#priceNote");
+  note.hidden = !r;
+  if (r) {
+    const when = fmtTime(r[0]) === fmtTime(r[1]) ? fmtTime(r[1]) : `${fmtTime(r[0])} – ${fmtTime(r[1])}`;
+    $("#priceWhen").textContent = `Cardmarket trend prices via Scryfall, fetched ${when}` +
+      (all.missing ? ` · ${all.missing} card${all.missing === 1 ? "" : "s"} without a price` : "") +
+      (all.usd ? " · $ = no EUR price, USD shown" : "");
+  }
 }
 function tileHTML(e, isList) {
   const c = cardFor(e), url = imageUrls(c)[0], [p, cur] = priceOf(e);
@@ -534,7 +560,7 @@ function openDetail(e) {
     ["Set", `${esc(e.setName || c?.set_name || "")} (${esc(e.set.toUpperCase())}) #${esc(e.cn)}`],
     ["Rarity", esc(e.rarity || c?.rarity || "")], ["Finish", esc(e.finish)],
     v.type === "l" ? ["Set aside", `${e.qty} of ${e.owned} owned`] : ["Quantity", e.qty],
-    ["Price now", fmtPrice(p, cur)],
+    ["Trend price", fmtPrice(p, cur) + (cardCache[e.k]?.t ? ` <span class="hint">(fetched ${fmtTime(cardCache[e.k].t)})</span>` : "")],
   ];
   if (e.from) rows.push(["From", esc(e.from)]);
   if (e.binder) rows.push(["Binder", esc(e.binder)]);
@@ -792,7 +818,7 @@ async function drawSheet(canvas, { title, entries, code, cols, prices, pics }) {
   ctx.fillText(ellipsize(ctx, title, textW), pad, pad);
   ctx.fillStyle = "#55555a"; ctx.font = `15px ${FONT}`;
   const d = new Date(); const date = `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`;
-  ctx.fillText(ellipsize(ctx, `${cardCount(entries)} cards · ${n} entries · ${date}` + (prices ? ` · ≈ €${eur.toFixed(2)} (Cardmarket via Scryfall)` : ""), textW), pad, pad + 42);
+  ctx.fillText(ellipsize(ctx, `${cardCount(entries)} cards · ${n} entries · ${date}` + (prices ? ` · ≈ €${eur.toFixed(2)} (Cardmarket trend via Scryfall)` : ""), textW), pad, pad + 42);
   ctx.fillText(ellipsize(ctx, qrs.length > 1 ? `Import all ${qrs.length} QR codes: drop or paste this image at` : "Import: drop or paste this image at", textW), pad, pad + 68);
   ctx.fillStyle = "#5a3ca0"; ctx.font = `600 15px ${FONT}`;
   ctx.fillText(ellipsize(ctx, shareBase(), textW), pad, pad + 90);
@@ -1104,6 +1130,14 @@ function setupFilters() {
   });
 }
 function setupViews() {
+  $("#refreshPrices").onclick = async () => {
+    const v = currentView(); if (!v || fetching) return;
+    const before = fetchedRange(v.entries)?.[1] || 0;
+    // Scryfall updates prices once a day, so refetching data younger than an hour gains nothing
+    await fetchCards(v.entries, { force: true, olderThan: 3600e3 });
+    renderAll();
+    toast((fetchedRange(v.entries)?.[1] || 0) > before ? "Prices refreshed." : "Prices were fetched less than an hour ago; Scryfall updates them once a day.");
+  };
   $("#viewSelect").onchange = ev => setView(ev.target.value);
   $("#activeList").onchange = ev => {
     if (ev.target.value === "__new") { if (!newList()) renderActiveList(); }
