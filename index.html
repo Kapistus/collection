@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binder Share</title>
+<meta name="description" content="View, filter and share Magic: The Gathering collections from ManaBox CSV exports. No accounts, nothing stored on a server.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Binder Share</div>
+  <div class="viewpick">
+    <label for="viewSelect" class="sr">Showing</label>
+    <select id="viewSelect" title="Collection or list to show"></select>
+    <button id="renameView" class="ghost" title="Rename">Rename</button>
+    <button id="deleteView" class="ghost" title="Remove from this browser">Delete</button>
+  </div>
+  <div class="actions">
+    <button id="importBtn" class="primary">Import</button>
+    <button id="shareBtn">Share</button>
+    <button id="filtersToggle" class="only-narrow">Filters</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside id="sidebar" class="sidebar">
+    <div class="field">
+      <input id="q" type="search" placeholder="Search name, type, rules text, set…" autocomplete="off">
+    </div>
+    <div class="field row">
+      <label for="sort">Sort</label>
+      <select id="sort">
+        <option value="name">Name</option>
+        <option value="ci">Color identity</option>
+        <option value="cmc">Mana value</option>
+        <option value="rarity">Rarity</option>
+        <option value="price">Price</option>
+        <option value="set">Set</option>
+        <option value="type">Type</option>
+        <option value="qty">Quantity</option>
+      </select>
+      <button id="sortDir" class="ghost small" title="Sort direction">↑</button>
+    </div>
+    <div class="field row"><label for="fSet">Set</label><select id="fSet"></select></div>
+    <div class="field row"><label for="fKeyword">Keyword</label><select id="fKeyword"></select></div>
+    <div class="field row"><label for="fType">Type</label><select id="fType"></select></div>
+    <div class="field row" id="binderRow"><label for="fBinder">Binder</label><select id="fBinder"></select></div>
+    <fieldset>
+      <legend>Color identity</legend>
+      <div class="pips" id="pips"></div>
+      <select id="colorMode">
+        <option value="any">Includes any</option>
+        <option value="within">Within (deck identity)</option>
+        <option value="exact">Exactly</option>
+      </select>
+    </fieldset>
+    <fieldset>
+      <legend>Rarity</legend>
+      <div id="rarities" class="checks"></div>
+    </fieldset>
+    <label class="check"><input type="checkbox" id="fFoil"> Foil / etched only</label>
+    <button id="clearFilters" class="ghost wide">Clear filters</button>
+    <div class="sidebox" id="setAsideBox">
+      <div class="sidelabel">Set aside to</div>
+      <select id="activeList"></select>
+      <p class="hint">Use <b>+</b> on a card, right-click (long-press on touch), or select cards with Ctrl/Shift-click and press <kbd>A</kbd>.</p>
+    </div>
+    <div class="sidebox" id="listBox" hidden>
+      <p class="hint">In a list: <b>+</b>/<b>−</b> on a card, right-click for more. Select cards and press <kbd>Del</kbd> to remove.</p>
+    </div>
+  </aside>
+
+  <main>
+    <div class="statusbar">
+      <span id="stats"></span>
+      <span id="progress" hidden></span>
+      <label class="zoom" title="Card size">Size <input id="zoom" type="range" min="100" max="260" value="160"></label>
+    </div>
+    <div id="empty" class="empty" hidden>
+      <h2>Nothing loaded yet</h2>
+      <p>Import a <b>ManaBox CSV export</b>, a <b>share image</b> or a <b>share link / code</b>.</p>
+      <p>You can also drop a file anywhere on this page, or paste an image or code with <kbd>Ctrl</kbd>+<kbd>V</kbd>.</p>
+      <button class="primary" id="emptyImport">Import</button>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+</div>
+
+<footer>
+  Everything stays in your browser; nothing is uploaded. Card data and images from
+  <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
+  Unofficial Fan Content permitted under the Fan Content Policy. Not approved/endorsed by Wizards.
+  Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.
+</footer>
+
+<!-- card detail -->
+<dialog id="detailDlg" class="dlg">
+  <div class="dlg-body detail" id="detailBody"></div>
+  <div class="dlg-foot"><div id="detailActions" class="grow"></div><button data-close>Close</button></div>
+</dialog>
+
+<!-- import -->
+<dialog id="importDlg" class="dlg">
+  <h2>Import</h2>
+  <div class="dlg-body">
+    <div id="dropZone" class="dropzone" tabindex="0">
+      <b>Drop a ManaBox CSV or a share image here</b>
+      <span>or</span>
+      <button id="pickFile" class="primary">Choose file…</button>
+      <input id="fileInput" type="file" accept=".csv,text/csv,image/*" hidden>
+    </div>
+    <label for="codeInput" class="sidelabel">…or paste a share link or code</label>
+    <textarea id="codeInput" rows="3" placeholder="https://…#MTG1:…  or  MTG1:…"></textarea>
+    <p class="hint">Tip: copy a share image in your chat app and press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere on this page.</p>
+    <p id="importMsg" class="msg"></p>
+  </div>
+  <div class="dlg-foot"><button id="importCode" class="primary">Import code</button><button data-close>Close</button></div>
+</dialog>
+
+<!-- share -->
+<dialog id="shareDlg" class="dlg wide">
+  <h2>Share</h2>
+  <div class="dlg-body">
+    <div class="share-opts">
+      <label>Title <input id="shareTitle" type="text" maxlength="80"></label>
+      <label>Columns <input id="shareCols" type="number" min="2" max="12" value="6"></label>
+      <label class="check"><input id="sharePrices" type="checkbox" checked> Prices</label>
+      <label class="check"><input id="sharePics" type="checkbox" checked> Card pictures</label>
+    </div>
+    <p id="shareInfo" class="hint"></p>
+    <div class="sheet-wrap"><canvas id="sheet"></canvas></div>
+  </div>
+  <div class="dlg-foot">
+    <span id="shareMsg" class="msg grow"></span>
+    <button id="copyImg" class="primary">Copy image</button>
+    <button id="downloadImg">Download PNG</button>
+    <button id="copyLink">Copy link</button>
+    <button data-close>Close</button>
+  </div>
+</dialog>
+
+<div id="ctxMenu" class="ctx" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<div id="dropOverlay" class="drop-overlay" hidden>Drop to import</div>
+
+<script src="vendor/qrcode-generator.js"></script>
+<script src="vendor/zxing-reader.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
