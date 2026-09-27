@@ -227,7 +227,7 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 #codeOut { word-break: break-all; resize: vertical; min-height: 4.5em; }
 
 /* export, backup, choice dialog, price change */
-.dlg.narrow { width: min(460px, 94vw); }
+.dlg.narrow { width: min(560px, 94vw); }
 .formats { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .formats .check { align-items: flex-start; }
 .formats .check input { margin-top: 3px; }

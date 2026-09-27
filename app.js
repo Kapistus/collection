@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-9";
+const APP_VERSION = "2026.09.27-10";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -17,7 +17,8 @@ const COLORS = "WUBRG";
 const RARITIES = ["common", "uncommon", "rare", "mythic", "special"];
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 4, bonus: 5 };
 const TYPES = ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"];
-const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom", want: "bs.want" };
+const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom", want: "bs.want",
+            choiceCollection: "bs.choice.collection", choiceList: "bs.choice.list" };
 
 // ------------------------------------------------------------------ small helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -358,33 +359,66 @@ function setView(id) {
   if (v) fetchCards(v.entries).then(renderAll);
 }
 
-/** Ask with custom buttons; resolves to the chosen value, or null if the dialog is dismissed. */
-function askChoice(title, text, buttons) {
+/** Ask with custom buttons; resolves to the chosen value, or null if dismissed.
+    With rememberKey, the previous answer becomes the highlighted default (Enter repeats it) and a new answer is saved. */
+function askChoice(title, text, buttons, rememberKey = null) {
   return new Promise(resolve => {
     const d = $("#askDlg"), box = $("#askBtns");
     $("#askTitle").textContent = title; $("#askText").textContent = text; box.innerHTML = "";
-    let result = null;
-    for (const [value, label, primary] of buttons) {
-      const b = document.createElement("button"); b.textContent = label; if (primary) b.className = "primary";
+    const last = rememberKey ? load(rememberKey, null) : null;
+    const preferred = buttons.some(([v]) => v !== null && v === last) ? last : buttons.find(b => b[2])?.[0];
+    let result = null, focusBtn = null;
+    for (const [value, label] of buttons) {
+      const b = document.createElement("button");
+      b.textContent = label + (rememberKey && value !== null && value === last ? " (last used)" : "");
+      if (value !== null && value === preferred) { b.className = "primary"; focusBtn = b; }
       b.onclick = () => { result = value; d.close(); }; box.append(b);
     }
-    d.addEventListener("close", () => resolve(result), { once: true });
-    d.showModal();
+    d.addEventListener("close", () => { if (rememberKey && result) save(rememberKey, result); resolve(result); }, { once: true });
+    d.showModal(); focusBtn?.focus();
   });
 }
 const uniqueName = (name, taken) => { if (!taken.has(name)) return name; let i = 2; while (taken.has(`${name} (${i})`)) i++; return `${name} (${i})`; };
 const contentKey = arr => arr.map(e => `${itemKey(e)}*${e.qty}`).sort().join(",");
 const REPLACE_BUTTONS = [["replace", "Replace", true], ["keep", "Keep both"], [null, "Cancel"]];
 
+/** One physical ManaBox row: same printing, finish, binder, condition, language and "Added" timestamp. */
+const rowKey = e => [e.sid || e.k, e.finish, e.binder || "", e.condition || "", e.language || "", e.added || ""].join("|");
+/** Add the rows of a newer export to a collection: new rows are appended, known rows take the new quantity,
+    rows missing from the file are kept (use Replace to mirror the file exactly). */
+function mergeInto(col, entries) {
+  const byKey = new Map(col.entries.map(e => [rowKey(e), e]));
+  let added = 0, updated = 0, same = 0;
+  for (const e of entries) {
+    const old = byKey.get(rowKey(e));
+    if (!old) { col.entries.push(e); byKey.set(rowKey(e), e); added++; }
+    else if (old.qty !== e.qty) { old.qty = e.qty; updated++; }
+    else same++;
+  }
+  return { added, updated, same };
+}
 async function addCollection(title, kind, entries) {
   const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
   const existing = collections.find(x => x.id === id);
   if (existing) { setView("c:" + id); toast(`“${title}” is already imported and unchanged.`); return null; }   // null: nothing new to report
   const clash = collections.find(x => x.title === title);
   if (clash) {
+    const canAdd = kind === "csv" && clash.kind === "csv";   // row identity needs ManaBox's per-row data
     const choice = await askChoice(`“${title}” already exists`,
-      `You already have a collection called “${title}” (${cardCount(clash.entries)} cards). Replace it with this version (${cardCount(entries)} cards), or keep both? Your lists are not affected either way.`, REPLACE_BUTTONS);
+      `You already have a collection called “${title}” (${cardCount(clash.entries)} cards). This file has ${cardCount(entries)} cards.` +
+      (canAdd ? "\n\nReplace: make the collection exactly this file.\nAdd new cards: add rows that aren't there yet and update changed quantities; nothing is removed.\nKeep both: import it as a separate collection." : "") +
+      "\n\nYour lists are not affected.",
+      canAdd ? [["replace", "Replace", true], ["add", "Add new cards"], ["keep", "Keep both"], [null, "Cancel"]] : REPLACE_BUTTONS,
+      K.choiceCollection);
     if (!choice) return null;
+    if (choice === "add" && canAdd) {
+      const r = mergeInto(clash, entries);
+      saveCollections(); setView("c:" + clash.id);
+      toast(r.added || r.updated
+        ? `Added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` + (r.updated ? `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}` : "") + ` · ${r.same} unchanged.`
+        : `No new cards: all ${r.same} entries were already in “${clash.title}”.`, 6000);
+      return null;   // already reported
+    }
     if (choice === "keep") title = uniqueName(title, new Set(collections.map(x => x.title)));
     const c = { id, title, kind, created: Date.now(), entries };
     if (choice === "replace") collections[collections.indexOf(clash)] = c; else collections.push(c);
@@ -402,7 +436,7 @@ async function addListFromCode(name, entries) {
   if (clash && contentKey(clash.items) === contentKey(items)) { setView("l:" + clash.id); toast(`The list “${name}” is already up to date.`); return null; }
   if (clash) {
     const choice = await askChoice(`The list “${name}” already exists`,
-      `Replace your list “${name}” (${cardCount(clash.items)} cards) with this version (${cardCount(items)} cards), or keep both?`, REPLACE_BUTTONS);
+      `Replace your list “${name}” (${cardCount(clash.items)} cards) with this version (${cardCount(items)} cards), or keep both?`, REPLACE_BUTTONS, K.choiceList);
     if (!choice) return null;
     if (choice === "replace") { clash.items = items; saveLists(); setView("l:" + clash.id); return clash; }
     name = uniqueName(name, new Set(lists.map(l => l.name)));
