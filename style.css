@@ -61,7 +61,6 @@ legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
 .pips { display: flex; gap: 4px; margin-bottom: 8px; }
 .pips .pip { flex: 1 1 0; min-width: 0; max-width: 34px; aspect-ratio: 1; height: auto; }
 .pip { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-weight: 700; }
-.pip.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 #colorMode { width: 100%; }
 .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
@@ -241,3 +240,16 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .down { color: var(--danger); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .up { color: #81c784; } }
 #askText { white-space: pre-line; margin: 0; }
+
+/* color identity pips in Magic's mana colors: pale when off, full color with a ring when selected */
+.pip { --tint: #e2ddda; --full: #8e8884; --on-fg: #fff;
+  background: var(--tint); color: #1d1d1f; border: 2px solid transparent; transition: background .12s, box-shadow .12s; }
+.pip[data-c="W"] { --tint: #fdf8d8; --full: #efe0a0; --on-fg: #3a3000; }
+.pip[data-c="U"] { --tint: #cfe7fa; --full: #1e6fc2; }
+.pip[data-c="B"] { --tint: #dcd5d1; --full: #2b2522; }
+.pip[data-c="R"] { --tint: #fbd3c4; --full: #d23a2e; }
+.pip[data-c="G"] { --tint: #c8e8d3; --full: #1f8a4c; }
+.pip[data-c="C"] { --tint: #e6e1de; --full: #8e8884; }
+.pip:hover { border-color: var(--full); }
+.pip.on { background: var(--full); color: var(--on-fg); border-color: var(--ring, var(--full)); box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--ring, var(--full)); }
+@media (prefers-color-scheme: dark) { .pip[data-c="B"] { --ring: #cfc6c1; } }

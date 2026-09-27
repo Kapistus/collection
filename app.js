@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-8";
+const APP_VERSION = "2026.09.27-9";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -1279,8 +1279,9 @@ function setupFilters() {
   const pips = $("#pips");
   for (const c of COLORS + "C") {
     const b = document.createElement("button"); b.className = "pip"; b.textContent = c; b.type = "button";
+    b.dataset.c = c; b.setAttribute("aria-pressed", "false");
     b.title = { W: "White", U: "Blue", B: "Black", R: "Red", G: "Green", C: "Colorless" }[c];
-    b.onclick = () => { F.colors.has(c) ? F.colors.delete(c) : F.colors.add(c); b.classList.toggle("on"); renderGrid(); };
+    b.onclick = () => { F.colors.has(c) ? F.colors.delete(c) : F.colors.add(c); b.classList.toggle("on"); b.setAttribute("aria-pressed", F.colors.has(c)); renderGrid(); };
     pips.append(b);
   }
   const rar = $("#rarities");
@@ -1302,7 +1303,7 @@ function setupFilters() {
     Object.assign(F, { q: "", set: "", kw: "", type: "", binder: "", mode: "any", foil: false, want: null });
     F.colors.clear(); F.rar.clear();
     $("#q").value = ""; $("#fType").value = ""; $("#colorMode").value = "any"; $("#fFoil").checked = false;
-    document.querySelectorAll(".pip").forEach(p => p.classList.remove("on"));
+    document.querySelectorAll(".pip").forEach(p => { p.classList.remove("on"); p.setAttribute("aria-pressed", "false"); });
     document.querySelectorAll("#rarities input").forEach(i => { i.checked = false; });
     renderFilterOptions(); renderGrid();
   };
