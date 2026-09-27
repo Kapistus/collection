@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-11";
+const APP_VERSION = "2026.09.27-12";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -382,6 +382,7 @@ const uniqueName = (name, taken) => { if (!taken.has(name)) return name; let i =
 const contentKey = arr => arr.map(e => `${itemKey(e)}*${e.qty}`).sort().join(",");
 const REPLACE_BUTTONS = [["replace", "Replace", true], ["keep", "Keep both"], [null, "Cancel"]];
 
+const contentKeyRows = arr => arr.map(e => rowKey(e) + "*" + e.qty).sort().join("\n");
 /** One physical ManaBox row: same printing, finish, binder, condition, language and "Added" timestamp. */
 const rowKey = e => [e.sid || e.k, e.finish, e.binder || "", e.condition || "", e.language || "", e.added || ""].join("|");
 /** Add the rows of a newer export to a collection: new rows are appended, known rows take the new quantity,
@@ -399,8 +400,19 @@ function mergeInto(col, entries) {
 }
 async function addCollection(title, kind, entries) {
   const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
-  const existing = collections.find(x => x.id === id);
-  if (existing) { setView("c:" + id); toast(`“${title}” is already imported and unchanged.`); return null; }   // null: nothing new to report
+  const existing = collections.find(x => x.id === id) ||
+    // same rows under another file name (ManaBox dates its exports) counts as unchanged too
+    (kind === "csv" && collections.find(x => x.kind === "csv" && x.entries.length === entries.length &&
+      contentKeyRows(x.entries) === contentKeyRows(entries)));
+  if (existing) {
+    setView("c:" + existing.id);
+    const choice = await askChoice(`“${existing.title}” is already up to date`,
+      `This file has exactly the same ${entries.length} entries (${cardCount(entries)} cards) as your collection “${existing.title}”, so there is nothing new to add.`,
+      [["ok", "OK", true], ["keep", "Import as a separate collection"]]);
+    if (choice !== "keep") return null;
+    const c = { id: id + "-" + Date.now().toString(36), title: uniqueName(title, new Set(collections.map(x => x.title))), kind, created: Date.now(), entries };
+    collections.push(c); saveCollections(); setView("c:" + c.id); return c;
+  }
   // Which existing collection is this? ManaBox names every export differently, so recognise the library by its
   // rows (each has a unique "Added" time) and fall back to the name for share codes.
   let clash = null, common = 0;
@@ -411,6 +423,13 @@ async function addCollection(title, kind, entries) {
       if (n > common) { common = n; clash = c; }
     }
     if (clash && common < Math.max(1, 0.3 * Math.min(clash.entries.length, entries.length))) { clash = null; common = 0; }
+    if (!clash) {   // a collection received as a share image has no ManaBox rows: compare printings instead
+      const prints = new Set(entries.map(itemKey));
+      for (const c of collections.filter(x => x.kind === "code")) {
+        const n = c.entries.reduce((s, e) => s + (prints.has(itemKey(e)) ? 1 : 0), 0);
+        if (n > common && n >= 0.6 * Math.min(c.entries.length, prints.size)) { common = n; clash = c; }
+      }
+    }
   }
   clash ||= collections.find(x => x.title === title) || null;
   if (clash) {
@@ -1404,6 +1423,7 @@ function setupViews() {
 }
 
 async function init() {
+  $("#appVersion").textContent = `Version ${APP_VERSION}.`;
   // A stale cached copy of this file (or of index.html) would silently break newer buttons: say so instead.
   const pageVersion = document.querySelector('meta[name="app-version"]')?.content;
   if (pageVersion !== APP_VERSION) {
