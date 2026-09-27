@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-5";
+const APP_VERSION = "2026.09.27-6";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -920,6 +920,7 @@ async function refreshShare() {
     const nq = qrTexts(code).length;
     $("#shareInfo").textContent = `${s.entries.length} entries · ${cardCount(s.entries)} cards · ${nq} QR code${nq > 1 ? "s" : ""}`;
     $("#linkOut").value = s.link; $("#codeOut").value = code;
+    if (mode === "text") fitCodeBox();
     if (mode === "sheet") {
       await drawSheet($("#sheet"), { title, entries: s.entries, code, cols, prices: $("#sharePrices").checked, pics });
       if (s.entries.length > SHEET_MAX_PICS && token === s.token) say(`Over ${SHEET_MAX_PICS} entries, so the sheet lists the cards as text.`);
@@ -929,6 +930,11 @@ async function refreshShare() {
   } catch (err) {
     if (token === s.token) say(err.message, true);
   }
+}
+/** Show the whole code without dragging: grow the field to its content, up to about half the screen (then it scrolls). */
+function fitCodeBox() {
+  const ta = $("#codeOut"); ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight + 2, Math.round(innerHeight * 0.5)) + "px";
 }
 function say(m, err) { $("#shareMsg").textContent = m; $("#shareMsg").className = "msg grow" + (err ? " err" : ""); }
 function canvasBlob() {
@@ -1159,7 +1165,13 @@ function setupViews() {
     setView(next);
   };
   document.querySelectorAll("[data-close]").forEach(b => { b.onclick = () => b.closest("dialog").close(); });
-  document.querySelectorAll("dialog").forEach(d => d.addEventListener("click", ev => { if (ev.target === d) d.close(); }));
+  // Close on a click on the backdrop, but only if the press also started there: dragging a text selection or
+  // a textarea's resize handle out of the dialog ends with a "click" on the dialog itself.
+  document.querySelectorAll("dialog").forEach(d => {
+    let downOnBackdrop = false;
+    d.addEventListener("pointerdown", ev => { downOnBackdrop = ev.target === d; });
+    d.addEventListener("click", ev => { if (ev.target === d && downOnBackdrop) d.close(); downOnBackdrop = false; });
+  });
 }
 
 async function init() {

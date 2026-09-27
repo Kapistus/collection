@@ -197,6 +197,8 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
   main { padding: 0 10px 20px; }
   .grid { gap: 10px; }
   .zoom { display: none; }
+  .seg { display: flex; flex-wrap: nowrap; width: 100%; }
+  .seg button { flex: 1 1 auto; padding: 7px 6px; font-size: 14px; white-space: nowrap; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(min(var(--tile), 44vw), 1fr)); }
 }
 
@@ -220,3 +222,4 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .cmp-table th.num { text-align: right; }
 .pricenote { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .statusbar #stats { color: var(--fg); }
+#codeOut { word-break: break-all; resize: vertical; min-height: 4.5em; }
