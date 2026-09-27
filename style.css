@@ -256,3 +256,7 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .ask-select { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .ask-select label { color: var(--muted); font-size: 13.5px; }
 .ask-select select { flex: 1; min-width: 0; }
+.ask-radios { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+.ask-radios .check { align-items: flex-start; }
+.ask-radios .check input { margin-top: 3px; }
+#askHint { margin-top: 8px; }

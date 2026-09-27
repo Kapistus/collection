@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Binder Share</title>
 <meta name="description" content="View, filter and share Magic: The Gathering collections from ManaBox CSV exports. No accounts, nothing stored on a server.">
-<meta name="app-version" content="2026.09.27-14">
-<link rel="stylesheet" href="style.css?v=2026.09.27-14">
+<meta name="app-version" content="2026.09.27-15">
+<link rel="stylesheet" href="style.css?v=2026.09.27-15">
 </head>
 <body>
 <header class="topbar">
@@ -220,6 +220,8 @@
   <h2 id="askTitle"></h2>
   <div class="dlg-body"><p id="askText"></p>
     <div id="askSelectWrap" class="ask-select" hidden><label for="askSelect" id="askSelectLabel"></label><select id="askSelect"></select></div>
+    <p id="askHint" class="hint" hidden></p>
+    <fieldset id="askRadios" class="ask-radios" hidden><legend id="askRadiosLabel"></legend><div id="askRadioList"></div></fieldset>
   </div>
   <div class="dlg-foot" id="askBtns"></div>
 </dialog>
@@ -230,6 +232,6 @@
 
 <script src="vendor/qrcode-generator.js?v=2.0.4"></script>
 <script src="vendor/zxing-reader.js?v=3.1.4"></script>
-<script src="app.js?v=2026.09.27-14"></script>
+<script src="app.js?v=2026.09.27-15"></script>
 </body>
 </html>

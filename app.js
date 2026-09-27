@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-14";
+const APP_VERSION = "2026.09.27-15";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -18,7 +18,7 @@ const RARITIES = ["common", "uncommon", "rare", "mythic", "special"];
 const RARITY_ORDER = { common: 0, uncommon: 1, rare: 2, mythic: 3, special: 4, bonus: 5 };
 const TYPES = ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"];
 const K = { cards: "bs.cards", cols: "bs.collections", lists: "bs.lists", view: "bs.view", active: "bs.active", zoom: "bs.zoom", want: "bs.want",
-            choiceUpdate: "bs.choice.update", choiceNew: "bs.choice.new", choiceList: "bs.choice.list", lastTarget: "bs.lastTarget" };
+            choiceUpdate: "bs.choice.update", choiceNew: "bs.choice.new", choiceList: "bs.choice.list", lastTarget: "bs.lastTarget", mergeMode: "bs.mergeMode" };
 
 // ------------------------------------------------------------------ small helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -361,7 +361,7 @@ function setView(id) {
 
 /** Ask with custom buttons; resolves to the chosen value, or null if dismissed.
     With rememberKey, the previous answer becomes the highlighted default (Enter repeats it) and a new answer is saved. */
-function askChoice(title, text, buttons, rememberKey = null, select = null) {
+function askChoice(title, text, buttons, rememberKey = null, select = null, radios = null) {
   return new Promise(resolve => {
     const d = $("#askDlg"), box = $("#askBtns");
     $("#askTitle").textContent = title; $("#askText").textContent = text; box.innerHTML = "";
@@ -371,6 +371,20 @@ function askChoice(title, text, buttons, rememberKey = null, select = null) {
       $("#askSelectLabel").textContent = select.label; sel.innerHTML = "";
       for (const [v, l] of select.options) sel.add(new Option(l, v));
       sel.value = select.value;
+    }
+    const hint = $("#askHint");
+    const showHint = () => { const t = select?.hint?.(sel.value); hint.hidden = !t; hint.textContent = t || ""; };
+    sel.onchange = showHint; showHint();
+    const rbox = $("#askRadios"), rlist = $("#askRadioList");
+    rbox.hidden = !radios; rlist.innerHTML = "";
+    if (radios) {
+      $("#askRadiosLabel").textContent = radios.label;
+      for (const [v, label] of radios.options) {
+        const l = document.createElement("label"); l.className = "check";
+        l.innerHTML = `<input type="radio" name="askRadio" value="${esc(v)}"> <span>${label}</span>`;
+        if (v === radios.value) l.querySelector("input").checked = true;
+        rlist.append(l);
+      }
     }
     const last = rememberKey ? load(rememberKey, null) : null;
     const preferred = buttons.some(([v]) => v !== null && v !== "cancel" && v === last) ? last : buttons.find(b => b[2])?.[0];
@@ -384,7 +398,9 @@ function askChoice(title, text, buttons, rememberKey = null, select = null) {
     d.addEventListener("close", () => {
       if (result === "cancel") result = null;
       if (rememberKey && result) save(rememberKey, result);
-      resolve(select ? (result ? { choice: result, target: sel.value } : null) : result);
+      const mode = radios ? document.querySelector('input[name="askRadio"]:checked')?.value : undefined;
+      if (radios && result && mode) save(radios.rememberKey, mode);
+      resolve(select ? (result ? { choice: result, target: sel.value, mode } : null) : result);
     }, { once: true });
     d.showModal(); focusBtn?.focus();
   });
@@ -398,17 +414,20 @@ const contentKeyRows = arr => arr.map(e => rowKey(e) + "*" + e.qty).sort().join(
 const rowKey = e => [e.sid || e.k, e.finish, e.binder || "", e.condition || "", e.language || "", e.added || ""].join("|");
 /** Add the rows of a newer export to a collection: new rows are appended, known rows take the new quantity,
     rows missing from the file are kept (use Replace to mirror the file exactly). */
-function mergeInto(col, entries, kind = "csv") {
+/** Merge modes: "missing" = only add what isn't there; "update" = add new + take changed quantities;
+    "all" = add everything, summing quantities of what's already there. */
+function mergeInto(col, entries, kind = "csv", mode = "update") {
   const key = kind === "csv" && col.kind === "csv" ? rowKey : itemKey;
   const byKey = new Map(col.entries.map(e => [key(e), e]));
   let added = 0, updated = 0, same = 0;
   for (const e of entries) {
     const old = byKey.get(key(e));
-    if (!old) { col.entries.push(e); byKey.set(key(e), e); added++; }
-    else if (old.qty !== e.qty) { old.qty = e.qty; updated++; }
+    if (!old) { const n = { ...e }; col.entries.push(n); byKey.set(key(e), n); added++; }
+    else if (mode === "all") { old.qty += e.qty; updated++; }
+    else if (mode === "update" && old.qty !== e.qty) { old.qty = e.qty; updated++; }
     else same++;
   }
-  return { added, updated, same };
+  return { added, updated, same, mode };
 }
 /** How many entries of `entries` are already in collection c. ManaBox CSVs are compared row by row (each row has a
     unique "Added" time); anything involving a share code is compared by printing + finish. */
@@ -423,7 +442,9 @@ function createCollection(title, kind, entries, id) {
   return c;
 }
 const reportMerge = (r, target) => toast(r.added || r.updated
-  ? `Merged into “${target.title}”: added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` + (r.updated ? `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}` : "") + ` · ${r.same} unchanged.`
+  ? `Merged into “${target.title}”: added ${r.added} new entr${r.added === 1 ? "y" : "ies"}` +
+    (r.updated ? (r.mode === "all" ? `, added copies to ${r.updated} existing` : `, updated ${r.updated} quantit${r.updated === 1 ? "y" : "ies"}`) : "") +
+    (r.same ? ` · ${r.same} ${r.mode === "missing" ? "already there, skipped" : "unchanged"}` : "") + "."
   : `Nothing new: all ${r.same} entries were already in “${target.title}”.`, 6000);
 
 const newListId = () => "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -431,16 +452,17 @@ const toListItem = (e, from) => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finis
   name: e.name || "", sid: e.sid || "", setName: e.setName || "", rarity: e.rarity || "", binder: e.binder || "",
   condition: e.condition || "", language: e.language || "", from: e.from || from });
 /** Merge into a list by printing + finish: new printings are added, known ones take the new quantity. */
-function mergeIntoList(l, entries, from) {
+function mergeIntoList(l, entries, from, mode = "update") {
   const byKey = new Map(l.items.map(i => [itemKey(i), i]));
   let added = 0, updated = 0, same = 0;
   for (const e of entries) {
     const old = byKey.get(itemKey(e));
     if (!old) { const it = toListItem(e, from); l.items.push(it); byKey.set(itemKey(e), it); added++; }
-    else if (old.qty !== e.qty) { old.qty = e.qty; old.owned = Math.max(old.owned || 0, e.qty); updated++; }
+    else if (mode === "all") { old.qty += e.qty; old.owned = Math.max(old.owned || 0, old.qty); updated++; }
+    else if (mode === "update" && old.qty !== e.qty) { old.qty = e.qty; old.owned = Math.max(old.owned || 0, e.qty); updated++; }
     else same++;
   }
-  return { added, updated, same };
+  return { added, updated, same, mode };
 }
 /** Every collection and list the import could go into. */
 function importTargets() {
@@ -456,6 +478,11 @@ function overlapWith(t, entries, kind) {
   if (t.type === "c") return overlap(t.obj, entries, kind);
   const keys = new Set(entries.map(itemKey));
   return t.entries.reduce((n, e) => n + (keys.has(itemKey(e)) ? 1 : 0), 0);
+}
+function presentIn(t, entries, kind) {
+  const key = t.type === "c" && t.obj.kind === "csv" && kind === "csv" ? rowKey : itemKey;
+  const keys = new Set(t.entries.map(key));
+  return entries.reduce((n, e) => n + (keys.has(key(e)) ? 1 : 0), 0);
 }
 const targetLabel = t => `${t.type === "c" ? "Collection" : "List"}: ${t.title} (${cardCount(t.entries)} cards)`;
 
@@ -502,18 +529,26 @@ async function importCards(title, kind, entries, asList = false) {
   if (best) buttons.push(["replace", "Replace selected"]);
   buttons.push(["cancel", "Cancel"]);
   const res = await askChoice(best ? "Update an existing collection or list?" : "Merge or create new?",
-    text + "\n\nMerge adds cards that aren't in the selected collection or list yet and updates changed quantities; nothing is removed." +
+    text + "\n\nMerging never removes cards." +
     (best ? "\nReplace makes the selected one exactly this " + what + " (cards not in it are removed)." : "") +
     "\nYou can pick any collection or list below, whatever its name.",
     buttons, best ? K.choiceUpdate : K.choiceNew,
-    { label: "Into", options: targets.map(t => [t.id, targetLabel(t)]), value: preselect });
+    { label: "Into", options: targets.map(t => [t.id, targetLabel(t)]), value: preselect,
+      hint: id => { const t = targets.find(x => x.id === id); if (!t) return "";
+        const n = presentIn(t, entries, kind); const m = entries.length - n;
+        return `${n} of the ${entries.length} imported entr${entries.length === 1 ? "y is" : "ies are"} already in “${t.title}”, ${m} ${m === 1 ? "is" : "are"} new.`; } },
+    { label: "When merging", rememberKey: K.mergeMode, value: load(K.mergeMode, "update"), options: [
+      ["missing", "<b>Only cards that aren't there yet</b> <span class=\"hint\">cards already there are left as they are</span>"],
+      ["update", "<b>New cards and changed quantities</b> <span class=\"hint\">best for a newer ManaBox export of the same collection</span>"],
+      ["all", "<b>Everything, adding quantities together</b> <span class=\"hint\">for combining separate piles of cards</span>"]] });
   if (!res || res.choice === "cancel") return null;
   if (res.choice === "new") return createNew();
   const target = importTargets().find(t => t.id === res.target);
   if (!target) return null;
   save(K.lastTarget, target.id);
   if (res.choice === "merge") {
-    const r = target.type === "c" ? mergeInto(target.obj, entries, asList ? "code" : kind) : mergeIntoList(target.obj, entries, from);
+    const mode = res.mode || "update";
+    const r = target.type === "c" ? mergeInto(target.obj, entries, asList ? "code" : kind, mode) : mergeIntoList(target.obj, entries, from, mode);
     if (target.type === "c") saveCollections(); else saveLists();
     setView(target.id); reportMerge(r, target);
     return null;
