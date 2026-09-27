@@ -20,6 +20,7 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 
 **Compare a want list:** copy a want list from Cardmarket, paste it into **Compare**, and pick a collection. The site sorts the cards into *already have*, *partly* and *need to buy*.
 - Cards are matched by name, so any printing or finish counts. Double-faced cards match by either face.
+- Accepts Cardmarket's list formats: `4 Dark Ritual`, `1x Sol Ring`, a bare `Skullclamp`, and version markers like `Stock Up (V.1)`. It also reads the quantity-on-its-own-line format you get when copying a list from Cardmarket.
 - **Copy cards to buy** copies what's still missing, one `quantity name` per line.
 - **Show owned in gallery** filters the collection down to the matching cards.
 - **Set aside owned…** puts the matching copies into a list, so you know what to pull from your binders.

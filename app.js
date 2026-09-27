@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-7";
+const APP_VERSION = "2026.09.27-8";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -1073,10 +1073,13 @@ function parseWantList(text) {
     const m = /^(\d+)\s*x?\s+(.+)$/i.exec(line);
     if (m && pending === null) { qty = parseInt(m[1], 10); name = m[2]; }
     pending = null;
-    name = name.replace(/\s*\((?:[^)]*)\)\s*$/, "").trim();   // drop a trailing "(SET)" if present
+    name = name.trim();
     if (!name || qty <= 0) continue;
+    // Cardmarket adds a version marker, e.g. "Stock Up (V.1)". Some real names end in brackets
+    // ("B.F.M. (Big Furry Monster)"), so the stripped form is only a fallback key.
+    const stripped = name.replace(/\s*\([^)]*\)\s*$/, "").trim();
     const k = normName(name), prev = out.get(k);
-    if (prev) prev.qty += qty; else out.set(k, { name, qty, key: k });
+    if (prev) prev.qty += qty; else out.set(k, { name, qty, key: k, alt: stripped && stripped !== name ? normName(stripped) : null });
   }
   return [...out.values()];
 }
@@ -1086,7 +1089,7 @@ function compareWant(wants, entries) {
     if (!index.has(k)) index.set(k, []); index.get(k).push(e);
   }
   return wants.map(w => {
-    const owned = index.get(w.key) || [];
+    const owned = index.get(w.key) || (w.alt && index.get(w.alt)) || [];
     const have = owned.reduce((s, e) => s + e.qty, 0);
     return { ...w, have, owned, status: have >= w.qty ? "have" : have > 0 ? "part" : "need" };
   });
