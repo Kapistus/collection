@@ -8,7 +8,8 @@ const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
 const CARD_TTL = 24 * 3600e3;  // prices update once a day
 const CODE_PREFIX = "MTG1";
-const QR_CHUNK = 2600;         // payload characters per QR code (version 40-L holds 2953 bytes)
+const QR_CHUNK = 2600;         // payload characters per QR code part (version 40-L holds 2953 bytes)
+const QR_LINK_MAX = 2900;      // a whole share link fits in one QR code up to this length
 const SHEET_MAX_PICS = 150;    // more entries than this -> compact share image
 const COLORS = "WUBRG";
 const RARITIES = ["common", "uncommon", "rare", "mythic", "special"];
@@ -247,6 +248,13 @@ async function decodeCode(code) {
   return { title, entries };
 }
 
+const shareBase = () => location.origin + location.pathname.replace(/index\.html$/, "");
+/** Texts to put in QR codes: the whole share link if it fits in one (phone cameras then open the site),
+    otherwise the code split into parts. */
+function qrTexts(code) {
+  const link = shareBase() + "#" + code;
+  return link.length <= QR_LINK_MAX ? [link] : splitForQR(code);
+}
 function splitForQR(code) {
   if (code.length <= QR_CHUNK) return [code];
   const data = code.slice(CODE_PREFIX.length + 1), n = Math.ceil(data.length / QR_CHUNK), id = hashStr(code).slice(0, 4);
@@ -753,7 +761,7 @@ function ellipsize(ctx, text, max) {
 async function drawSheet(canvas, { title, entries, code, cols, prices, pics }) {
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   const pad = 28, gap = 14, cardW = 200, cardH = Math.round(cardW * 680 / 488), capH = 42;
-  const qrs = splitForQR(code).map(makeQR);
+  const qrs = qrTexts(code).map(makeQR);
   const cell = Math.max(3, Math.min(6, Math.floor(260 / qrs[0].getModuleCount())));
   const qrSizes = qrs.map(q => (q.getModuleCount() + 8) * cell);
   const qrW = qrSizes.reduce((a, b) => a + b, 0) + gap * (qrs.length - 1), qrH = Math.max(...qrSizes);
@@ -782,7 +790,7 @@ async function drawSheet(canvas, { title, entries, code, cols, prices, pics }) {
   ctx.fillText(ellipsize(ctx, `${cardCount(entries)} cards · ${n} entries · ${date}` + (prices ? ` · ≈ €${eur.toFixed(2)} (Cardmarket via Scryfall)` : ""), textW), pad, pad + 42);
   ctx.fillText(ellipsize(ctx, qrs.length > 1 ? `Import all ${qrs.length} QR codes: drop or paste this image at` : "Import: drop or paste this image at", textW), pad, pad + 68);
   ctx.fillStyle = "#5a3ca0"; ctx.font = `600 15px ${FONT}`;
-  ctx.fillText(ellipsize(ctx, location.origin + location.pathname.replace(/index\.html$/, ""), textW), pad, pad + 90);
+  ctx.fillText(ellipsize(ctx, shareBase(), textW), pad, pad + 90);
   let qx = width - pad - qrW;
   qrs.forEach((q, i) => { drawQR(ctx, q, qx, pad, cell); qx += qrSizes[i] + gap; });
 
@@ -830,49 +838,94 @@ async function drawSheet(canvas, { title, entries, code, cols, prices, pics }) {
   ctx.textAlign = "left";
 }
 
+/** Just the QR code(s) with a title: the smallest image to share. */
+function drawQROnly(canvas, { title, entries, code }) {
+  const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  const qrs = qrTexts(code).map(makeQR), pad = 24, gap = 16;
+  const cell = Math.max(3, Math.min(8, Math.floor(420 / qrs[0].getModuleCount())));
+  const sizes = qrs.map(q => (q.getModuleCount() + 8) * cell);
+  const qrW = sizes.reduce((a, b) => a + b, 0) + gap * (qrs.length - 1);
+  const width = Math.max(qrW + pad * 2, 360), height = pad + 64 + Math.max(...sizes) + 34 + pad;
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, width, height);
+  ctx.textBaseline = "top"; ctx.textAlign = "center";
+  ctx.fillStyle = "#1d1d1f"; ctx.font = `700 22px ${FONT}`;
+  ctx.fillText(ellipsize(ctx, title, width - pad * 2), width / 2, pad);
+  const d = new Date();
+  ctx.fillStyle = "#55555a"; ctx.font = `14px ${FONT}`;
+  ctx.fillText(ellipsize(ctx, `${cardCount(entries)} cards · ${entries.length} entries · ${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear()}`, width - pad * 2), width / 2, pad + 32);
+  let x = (width - qrW) / 2;
+  qrs.forEach((q, i) => { drawQR(ctx, q, x, pad + 60, cell); x += sizes[i] + gap; });
+  ctx.fillStyle = "#5a3ca0"; ctx.font = `600 13px ${FONT}`;
+  ctx.fillText(ellipsize(ctx, (qrs.length > 1 ? `Import all ${qrs.length} codes at ` : "Open or import at ") + shareBase(), width - pad * 2),
+               width / 2, height - pad - 18);
+  ctx.textAlign = "left";
+}
+
 let shareState = null;
+const MODE_HELP = {
+  sheet: "An image of the cards with the QR code in the corner. People see the cards; the site imports them from the same image.",
+  qr: "Only the QR code. Drop or paste the image on the site to import, or scan it with a phone camera to open the cards.",
+  text: "The link opens the site with these cards. The code can be pasted into Import. Chat apps may cut off very long links.",
+};
 async function refreshShare() {
   const s = shareState; if (!s) return;
   const title = $("#shareTitle").value.trim() || s.defaultTitle;
   const cols = Math.max(2, Math.min(12, parseInt($("#shareCols").value, 10) || 6));
   const pics = $("#sharePics").checked && s.entries.length <= SHEET_MAX_PICS;
+  const mode = s.mode;
+  document.querySelectorAll("#shareDlg .seg button").forEach(b => b.setAttribute("aria-selected", b.dataset.mode === mode));
+  $("#modeHelp").textContent = MODE_HELP[mode];
+  $("#sheetOpts").hidden = mode !== "sheet";
+  $("#imgWrap").hidden = mode === "text"; $("#textWrap").hidden = mode !== "text";
+  $("#copyImg").hidden = $("#downloadImg").hidden = mode === "text";
   const token = s.token = Symbol();
-  $("#shareMsg").textContent = "Drawing…"; $("#shareMsg").className = "msg grow";
+  say(mode === "text" ? "" : "Drawing…");
   try {
     const code = await encodeCode(title, s.entries);
     if (token !== s.token) return;
-    s.code = code; s.title = title;
-    s.link = location.origin + location.pathname + "#" + code;
-    const nq = splitForQR(code).length;
-    $("#shareInfo").textContent = `${s.entries.length} entries · code ${code.length} characters · ${nq} QR code${nq > 1 ? "s" : ""}` +
-      (s.entries.length > SHEET_MAX_PICS ? ` · over ${SHEET_MAX_PICS} entries, so the image lists cards as text` : "") +
-      (s.link.length > 2000 ? " · the link is long: some chat apps cut long messages, so share the image instead" : "");
-    await drawSheet($("#sheet"), { title, entries: s.entries, code, cols, prices: $("#sharePrices").checked, pics });
-    if (token === s.token) $("#shareMsg").textContent = "";
+    s.code = code; s.title = title; s.link = shareBase() + "#" + code;
+    const nq = qrTexts(code).length;
+    $("#shareInfo").textContent = `${s.entries.length} entries · ${cardCount(s.entries)} cards · ${nq} QR code${nq > 1 ? "s" : ""}`;
+    $("#linkOut").value = s.link; $("#codeOut").value = code;
+    if (mode === "sheet") {
+      await drawSheet($("#sheet"), { title, entries: s.entries, code, cols, prices: $("#sharePrices").checked, pics });
+      if (s.entries.length > SHEET_MAX_PICS && token === s.token) say(`Over ${SHEET_MAX_PICS} entries, so the sheet lists the cards as text.`);
+      else if (token === s.token) say("");
+    } else if (mode === "qr") { drawQROnly($("#sheet"), { title, entries: s.entries, code }); say(""); }
+    else if (s.link.length > 2000) say(`This link is ${s.link.length} characters; some chat apps cut long messages. The QR image is safer.`);
   } catch (err) {
-    if (token === s.token) { $("#shareMsg").textContent = err.message; $("#shareMsg").className = "msg grow err"; }
+    if (token === s.token) say(err.message, true);
   }
 }
+function say(m, err) { $("#shareMsg").textContent = m; $("#shareMsg").className = "msg grow" + (err ? " err" : ""); }
 function canvasBlob() {
   return new Promise((res, rej) => {
     try { $("#sheet").toBlob(b => b ? res(b) : rej(new Error("Could not create the image.")), "image/png"); }
     catch { rej(new Error("The browser blocked exporting card pictures. Turn off “Card pictures” and try again.")); }
   });
 }
+async function copyText(text, what) {
+  try { await navigator.clipboard.writeText(text); say(`${what} copied.`); }
+  catch { say("Copying was blocked by the browser: select the text and copy it manually.", true); }
+}
 function setupShare() {
   let t;
   const redraw = () => { clearTimeout(t); t = setTimeout(refreshShare, 300); };
   ["#shareTitle", "#shareCols", "#sharePrices", "#sharePics"].forEach(s => $(s).addEventListener("input", redraw));
+  document.querySelectorAll("#shareDlg .seg button").forEach(b => {
+    b.onclick = () => { shareState.mode = b.dataset.mode; refreshShare(); };
+  });
   $("#shareBtn").onclick = () => {
     const v = currentView(); const entries = visibleEntries();
     if (!v || !entries.length) { toast("No cards are shown with the current filters."); return; }
-    shareState = { entries, defaultTitle: v.title };
+    shareState = { entries, defaultTitle: v.title, mode: shareState?.mode || "sheet" };
     $("#shareTitle").value = v.title;
     $("#sharePics").checked = entries.length <= SHEET_MAX_PICS; $("#sharePics").disabled = entries.length > SHEET_MAX_PICS;
-    $("#shareMsg").textContent = "";
+    say("");
     $("#shareDlg").showModal(); refreshShare();
   };
-  const say = (m, err) => { $("#shareMsg").textContent = m; $("#shareMsg").className = "msg grow" + (err ? " err" : ""); };
   $("#copyImg").onclick = async () => {
     try { const b = await canvasBlob(); await navigator.clipboard.write([new ClipboardItem({ "image/png": b })]); say("Image copied: paste it into a chat."); }
     catch (err) { say(err.message.includes("blocked") ? err.message : "Your browser didn't allow copying images; use Download PNG.", true); }
@@ -880,14 +933,15 @@ function setupShare() {
   $("#downloadImg").onclick = async () => {
     try {
       const b = await canvasBlob(); const a = document.createElement("a");
-      a.href = URL.createObjectURL(b); a.download = (shareState.title || "cards").replace(/[\\/:*?"<>|]+/g, "_") + ".png";
+      a.href = URL.createObjectURL(b);
+      a.download = (shareState.title || "cards").replace(/[\\/:*?"<>|]+/g, "_") + (shareState.mode === "qr" ? " QR" : "") + ".png";
       a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); say("Saved.");
     } catch (err) { say(err.message, true); }
   };
-  $("#copyLink").onclick = async () => {
-    try { await navigator.clipboard.writeText(shareState.link); say("Link copied."); }
-    catch { say("Copying was blocked by the browser.", true); }
-  };
+  $("#copyLink").onclick = () => copyText(shareState.link, "Link");
+  $("#copyCode").onclick = () => copyText(shareState.code, "Code");
+  $("#linkOut").onfocus = ev => ev.target.select();
+  $("#codeOut").onfocus = ev => ev.target.select();
 }
 
 // ------------------------------------------------------------------ setup

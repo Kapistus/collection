@@ -10,11 +10,15 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
   - **Add:** use **+** on a card, right-click, or long-press on touch.
   - **Add several:** Ctrl/Shift-click to select cards, then press **A**.
   - **Edit a list:** open it from the dropdown at the top. Use **+**/**−** or **Del**, or right-click.
-- **Share** makes an image of what's shown (card pictures, or a text list for more than 150 entries) with a QR code in the corner that carries the list.
-  - **Copy image** puts it on the clipboard for pasting into a chat. **Download PNG** saves it. **Copy link** gives a link with the list inside it.
-- **Receive** by dropping or pasting (Ctrl+V) the share image on the page, choosing it with **Import**, or opening the link.
+- **Share** (applies to the cards currently shown) has three modes:
+  - **Card sheet:** an image of the cards, or a text list above 150 entries, with the QR code in the corner.
+  - **QR code only:** just the QR code with the title and card count. This is the smallest image.
+  - **Link / code:** the share link and the raw code, each with its own Copy button.
+  - Images can be copied to the clipboard or downloaded as PNG.
+  - When the whole link fits in one QR code (up to about 850 entries), the QR code contains the link itself, so scanning it with a phone camera opens the site with the cards.
+- **Receive** by dropping or pasting (Ctrl+V) either share image on the page, choosing it with **Import**, opening the link, scanning the QR code with a phone, or pasting the code into **Import**.
 
-A share image still imports after chat apps shrink it and convert it to JPEG. In testing, a full 731-entry collection decoded exactly from a 745 px wide JPEG.
+A share image still imports after chat apps shrink it and convert it to JPEG. In testing, a full 732-entry collection decoded exactly from a 745 px wide JPEG.
 
 ## What the share code contains
 

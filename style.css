@@ -144,6 +144,16 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .dropzone.over { border-color: var(--accent); }
 #codeInput { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 
+.share-top { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+.share-top input { width: 260px; max-width: 70vw; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+.seg button { border: 0; border-radius: 0; padding: 7px 14px; background: transparent; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-selected=true] { background: var(--accent); color: var(--accent-fg); }
+.textwrap { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.copyrow { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.copyrow input, .copyrow textarea { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 12px; }
+#sheetOpts { margin-bottom: 4px; }
 .share-opts { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .share-opts input[type=text] { width: 240px; }
 .share-opts input[type=number] { width: 64px; }

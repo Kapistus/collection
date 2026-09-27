@@ -122,20 +122,33 @@
 <dialog id="shareDlg" class="dlg wide">
   <h2>Share</h2>
   <div class="dlg-body">
-    <div class="share-opts">
+    <div class="share-top">
       <label>Title <input id="shareTitle" type="text" maxlength="80"></label>
+      <span id="shareInfo" class="hint"></span>
+    </div>
+    <div class="seg" role="tablist" aria-label="What to share">
+      <button role="tab" data-mode="sheet" aria-selected="true">Card sheet</button>
+      <button role="tab" data-mode="qr" aria-selected="false">QR code only</button>
+      <button role="tab" data-mode="text" aria-selected="false">Link / code</button>
+    </div>
+    <p id="modeHelp" class="hint"></p>
+    <div id="sheetOpts" class="share-opts">
       <label>Columns <input id="shareCols" type="number" min="2" max="12" value="6"></label>
       <label class="check"><input id="sharePrices" type="checkbox" checked> Prices</label>
       <label class="check"><input id="sharePics" type="checkbox" checked> Card pictures</label>
     </div>
-    <p id="shareInfo" class="hint"></p>
-    <div class="sheet-wrap"><canvas id="sheet"></canvas></div>
+    <div id="imgWrap" class="sheet-wrap"><canvas id="sheet"></canvas></div>
+    <div id="textWrap" class="textwrap" hidden>
+      <label for="linkOut" class="sidelabel">Link: opens the site with these cards</label>
+      <div class="copyrow"><input id="linkOut" type="text" readonly><button id="copyLink" class="primary">Copy link</button></div>
+      <label for="codeOut" class="sidelabel">Code: paste into Import on the site</label>
+      <div class="copyrow"><textarea id="codeOut" rows="4" readonly></textarea><button id="copyCode">Copy code</button></div>
+    </div>
   </div>
   <div class="dlg-foot">
     <span id="shareMsg" class="msg grow"></span>
     <button id="copyImg" class="primary">Copy image</button>
     <button id="downloadImg">Download PNG</button>
-    <button id="copyLink">Copy link</button>
     <button data-close>Close</button>
   </div>
 </dialog>
