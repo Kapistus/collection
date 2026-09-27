@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Binder Share</title>
 <meta name="description" content="View, filter and share Magic: The Gathering collections from ManaBox CSV exports. No accounts, nothing stored on a server.">
-<meta name="app-version" content="2026.09.27-6">
-<link rel="stylesheet" href="style.css?v=2026.09.27-6">
+<meta name="app-version" content="2026.09.27-7">
+<link rel="stylesheet" href="style.css?v=2026.09.27-7">
 </head>
 <body>
 <header class="topbar">
@@ -21,6 +21,7 @@
     <button id="importBtn" class="primary">Import</button>
     <button id="shareBtn">Share</button>
     <button id="compareBtn" title="Check a want list against a collection">Compare</button>
+    <button id="exportBtn" title="Export for ManaBox, Cardmarket, Moxfield…, or back up all your data">Export</button>
     <button id="filtersToggle" class="only-narrow">Filters</button>
   </div>
 </header>
@@ -76,7 +77,7 @@
   <main>
     <div class="statusbar">
       <span id="stats"></span>
-      <span id="priceNote" class="pricenote" hidden><span id="priceWhen"></span> <button id="refreshPrices" class="ghost small" title="Fetch current prices from Scryfall">Refresh</button></span>
+      <span id="priceNote" class="pricenote" hidden><span id="priceWhen"></span><span id="priceChange"></span> <button id="refreshPrices" class="ghost small" title="Fetch current prices from Scryfall">Refresh</button></span>
       <span id="progress" hidden></span>
       <span id="wantChip" class="chip" hidden>Only cards on your want list <button id="wantChipClear" class="ghost small">Show all</button></span>
       <label class="zoom" title="Card size">Size <input id="zoom" type="range" min="100" max="260" value="160"></label>
@@ -109,10 +110,10 @@
   <h2>Import</h2>
   <div class="dlg-body">
     <div id="dropZone" class="dropzone" tabindex="0">
-      <b>Drop a ManaBox CSV or a share image here</b>
+      <b>Drop a ManaBox CSV, a share image or a backup file here</b>
       <span>or</span>
       <button id="pickFile" class="primary">Choose file…</button>
-      <input id="fileInput" type="file" accept=".csv,text/csv,image/*" hidden>
+      <input id="fileInput" type="file" accept=".csv,text/csv,image/*,.json,application/json" hidden>
     </div>
     <label for="codeInput" class="sidelabel">…or paste a share link or code</label>
     <textarea id="codeInput" rows="3" placeholder="https://…#MTG1:…  or  MTG1:…"></textarea>
@@ -183,12 +184,50 @@
   </div>
 </dialog>
 
+<!-- export & backup -->
+<dialog id="exportDlg" class="dlg wide">
+  <h2>Export &amp; backup</h2>
+  <div class="dlg-body">
+    <p class="hint" id="exportWhat"></p>
+    <fieldset class="formats">
+      <legend>Format</legend>
+      <label class="check"><input type="radio" name="fmt" value="manabox" checked> <span><b>ManaBox CSV</b> <span class="hint">same columns as a ManaBox export</span></span></label>
+      <label class="check"><input type="radio" name="fmt" value="cardmarket"> <span><b>Cardmarket want list</b> <span class="hint">“1 Card Name” per line, for pasting</span></span></label>
+      <label class="check"><input type="radio" name="fmt" value="moxfield"> <span><b>Moxfield / Archidekt / Arena text</b> <span class="hint">“1 Sol Ring (DSC) 94 *F*”</span></span></label>
+      <label class="check"><input type="radio" name="fmt" value="csv"> <span><b>Spreadsheet CSV</b> <span class="hint">quantity, name, set, number, finish, rarity, price</span></span></label>
+    </fieldset>
+    <textarea id="exportOut" rows="10" readonly></textarea>
+    <div class="row-btns">
+      <button id="exportCopy" class="primary">Copy</button>
+      <button id="exportDownload">Download file</button>
+      <span id="exportMsg" class="msg"></span>
+    </div>
+    <hr class="sep">
+    <h3 class="subhead">Backup</h3>
+    <p class="hint">Everything is stored only in this browser. A backup file holds all your collections, lists and your last want list, so you can restore them after clearing browser data or move them to another device.</p>
+    <div class="row-btns">
+      <button id="backupBtn">Download backup</button>
+      <button id="restoreBtn">Restore from backup…</button>
+      <input id="restoreInput" type="file" accept=".json,application/json" hidden>
+      <span id="backupMsg" class="msg"></span>
+    </div>
+  </div>
+  <div class="dlg-foot"><button data-close>Close</button></div>
+</dialog>
+
+<!-- generic choice (replace / keep both …) -->
+<dialog id="askDlg" class="dlg narrow">
+  <h2 id="askTitle"></h2>
+  <div class="dlg-body"><p id="askText"></p></div>
+  <div class="dlg-foot" id="askBtns"></div>
+</dialog>
+
 <div id="ctxMenu" class="ctx" hidden></div>
 <div id="toast" class="toast" hidden></div>
 <div id="dropOverlay" class="drop-overlay" hidden>Drop to import</div>
 
 <script src="vendor/qrcode-generator.js?v=2.0.4"></script>
 <script src="vendor/zxing-reader.js?v=3.1.4"></script>
-<script src="app.js?v=2026.09.27-6"></script>
+<script src="app.js?v=2026.09.27-7"></script>
 </body>
 </html>

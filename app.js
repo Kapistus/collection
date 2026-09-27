@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-6";
+const APP_VERSION = "2026.09.27-7";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -127,15 +127,31 @@ function imageUrls(card, size = "normal") {
   if (card.images) return [card.images[size] || card.images.normal];
   return card.faces.filter(f => f.images).map(f => f.images[size] || f.images.normal);
 }
-function priceOf(e) {
-  const c = cardFor(e); if (!c) return [null, ""];
-  const suf = e.finish === "foil" ? "_foil" : e.finish === "etched" ? "_etched" : "";
+function priceFrom(prices, finish) {
+  const suf = finish === "foil" ? "_foil" : finish === "etched" ? "_etched" : "";
   for (const cur of ["eur", "usd"]) {
-    let v = num(c.prices[cur + suf]);
-    if (v === null && suf === "_etched") v = num(c.prices[cur + "_foil"]);
+    let v = num(prices?.[cur + suf]);
+    if (v === null && suf === "_etched") v = num(prices?.[cur + "_foil"]);
     if (v !== null) return [v, cur];
   }
   return [null, ""];
+}
+function priceOf(e) { const c = cardFor(e); return c ? priceFrom(c.prices, e.finish) : [null, ""]; }
+/** Previous (different) price of a card and when it was fetched, or null. */
+function prevPriceOf(e) {
+  const p = cardCache[e.k]?.prev; if (!p) return null;
+  const [v, cur] = priceFrom(p.prices, e.finish);
+  return v === null ? null : { v, cur, t: p.t };
+}
+/** Value change of entries since their previous prices (EUR only, cards without a previous price are skipped). */
+function changeOf(entries) {
+  let diff = 0, n = 0, since = Infinity;
+  for (const e of entries) {
+    const prev = prevPriceOf(e), [now, cur] = priceOf(e);
+    if (!prev || now === null || prev.cur !== cur || cur !== "eur") continue;
+    diff += (now - prev.v) * e.qty; n += e.qty; since = Math.min(since, prev.t);
+  }
+  return n ? { diff, n, since } : null;
 }
 const fmtPrice = (v, cur) => v === null ? "–" : (cur === "eur" ? "€" : "$") + v.toFixed(2);
 const nameOf = e => e.name || cardFor(e)?.name || `${e.set.toUpperCase()} #${e.cn}`;
@@ -174,7 +190,12 @@ async function fetchCards(entries, { force = false, olderThan = CARD_TTL } = {})
       const t = Date.now();
       for (const e of chunk) {
         const card = (e.sid && byId[e.sid]) || bySetCn[e.k];
-        if (card) { cardCache[e.k] = { t, c: card }; } else notFound.push(e);
+        if (card) {
+          // keep the last *different* prices, so the change display survives refetches that return the same prices
+          const old = cardCache[e.k]; let prev = old?.prev || null;
+          if (old && JSON.stringify(old.c.prices) !== JSON.stringify(card.prices)) prev = { t: old.t, prices: old.c.prices };
+          cardCache[e.k] = prev ? { t, c: card, prev } : { t, c: card };
+        } else notFound.push(e);
       }
       if (i + BATCH < todo.length) await sleep(DELAY);
     }
@@ -208,7 +229,8 @@ function unb64url(s) {
 }
 async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
 
-async function encodeCode(title, entries) {
+const LIST_MARK = "L\u001f";   // title-line prefix: the code came from a list (imports as an editable list)
+async function encodeCode(title, entries, kind = "collection") {
   const groups = new Map();   // merge duplicates (same printing + finish across binders)
   for (const e of entries) {
     const c = cardFor(e);
@@ -222,7 +244,7 @@ async function encodeCode(title, entries) {
     .sort((a, b) => cmp(cnKey(a.cn), cnKey(b.cn)) || a.finish.localeCompare(b.finish))
     .map(g => cnEsc(g.cn) + (g.qty > 1 ? "*" + g.qty : "") + (g.finish === "foil" ? "!f" : g.finish === "etched" ? "!e" : ""))
     .join(",")).join(";");
-  const text = title.replace(/[\r\n]+/g, " ").slice(0, 80) + "\n" + body;
+  const text = (kind === "list" ? LIST_MARK : "") + title.replace(/[\r\n\u001f]+/g, " ").slice(0, 80) + "\n" + body;
   const z = await pipe(new TextEncoder().encode(text), new CompressionStream("deflate-raw"));
   return `${CODE_PREFIX}:${b64url(z)}`;
 }
@@ -234,7 +256,9 @@ async function decodeCode(code) {
   try { text = new TextDecoder().decode(await pipe(unb64url(m[1]), new DecompressionStream("deflate-raw"))); }
   catch { throw new Error("The code is damaged or incomplete."); }
   const nl = text.indexOf("\n");
-  const title = text.slice(0, nl).trim() || "Shared cards", body = text.slice(nl + 1);
+  let head = text.slice(0, nl), kind = "collection";
+  if (head.startsWith(LIST_MARK)) { kind = "list"; head = head.slice(LIST_MARK.length); }
+  const title = head.trim() || "Shared cards", body = text.slice(nl + 1);
   const entries = [];
   for (const part of body.split(";")) {
     if (!part) continue;
@@ -247,7 +271,7 @@ async function decodeCode(code) {
     }
   }
   if (!entries.length) throw new Error("The code contains no cards.");
-  return { title, entries };
+  return { title, entries, kind };
 }
 
 const shareBase = () => location.origin + location.pathname.replace(/index\.html$/, "");
@@ -334,19 +358,58 @@ function setView(id) {
   if (v) fetchCards(v.entries).then(renderAll);
 }
 
-function addCollection(title, kind, entries) {
-  const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
-  let c = collections.find(x => x.id === id);
-  if (!c) {
-    const same = kind === "csv" && collections.find(x => x.kind === "csv" && x.title === title);
-    if (same && confirm(`Replace the collection “${title}” with this file?\n\nYour lists are not affected.`)) {
-      collections = collections.filter(x => x !== same);
+/** Ask with custom buttons; resolves to the chosen value, or null if the dialog is dismissed. */
+function askChoice(title, text, buttons) {
+  return new Promise(resolve => {
+    const d = $("#askDlg"), box = $("#askBtns");
+    $("#askTitle").textContent = title; $("#askText").textContent = text; box.innerHTML = "";
+    let result = null;
+    for (const [value, label, primary] of buttons) {
+      const b = document.createElement("button"); b.textContent = label; if (primary) b.className = "primary";
+      b.onclick = () => { result = value; d.close(); }; box.append(b);
     }
-    c = { id, title, kind, created: Date.now(), entries };
-    collections.push(c); saveCollections();
+    d.addEventListener("close", () => resolve(result), { once: true });
+    d.showModal();
+  });
+}
+const uniqueName = (name, taken) => { if (!taken.has(name)) return name; let i = 2; while (taken.has(`${name} (${i})`)) i++; return `${name} (${i})`; };
+const contentKey = arr => arr.map(e => `${itemKey(e)}*${e.qty}`).sort().join(",");
+const REPLACE_BUTTONS = [["replace", "Replace", true], ["keep", "Keep both"], [null, "Cancel"]];
+
+async function addCollection(title, kind, entries) {
+  const id = hashStr(kind + "\n" + title + "\n" + entries.map(e => `${itemKey(e)}*${e.qty}|${e.binder || ""}`).join(","));
+  const existing = collections.find(x => x.id === id);
+  if (existing) { setView("c:" + id); toast(`“${title}” is already imported and unchanged.`); return null; }   // null: nothing new to report
+  const clash = collections.find(x => x.title === title);
+  if (clash) {
+    const choice = await askChoice(`“${title}” already exists`,
+      `You already have a collection called “${title}” (${cardCount(clash.entries)} cards). Replace it with this version (${cardCount(entries)} cards), or keep both? Your lists are not affected either way.`, REPLACE_BUTTONS);
+    if (!choice) return null;
+    if (choice === "keep") title = uniqueName(title, new Set(collections.map(x => x.title)));
+    const c = { id, title, kind, created: Date.now(), entries };
+    if (choice === "replace") collections[collections.indexOf(clash)] = c; else collections.push(c);
+    saveCollections(); setView("c:" + id); return c;
   }
-  setView("c:" + id);
+  const c = { id, title, kind, created: Date.now(), entries };
+  collections.push(c); saveCollections(); setView("c:" + id);
   return c;
+}
+/** A list received as a share code becomes an editable list again. */
+async function addListFromCode(name, entries) {
+  const items = entries.map(e => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finish, qty: e.qty, owned: e.qty, name: "", sid: "",
+    setName: "", rarity: "", binder: "", condition: "", language: "", from: "imported " + new Date().toLocaleDateString() }));
+  const clash = lists.find(l => l.name === name);
+  if (clash && contentKey(clash.items) === contentKey(items)) { setView("l:" + clash.id); toast(`The list “${name}” is already up to date.`); return null; }
+  if (clash) {
+    const choice = await askChoice(`The list “${name}” already exists`,
+      `Replace your list “${name}” (${cardCount(clash.items)} cards) with this version (${cardCount(items)} cards), or keep both?`, REPLACE_BUTTONS);
+    if (!choice) return null;
+    if (choice === "replace") { clash.items = items; saveLists(); setView("l:" + clash.id); return clash; }
+    name = uniqueName(name, new Set(lists.map(l => l.name)));
+  }
+  const l = { id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, created: Date.now(), items };
+  lists.push(l); saveLists(); setView("l:" + l.id);
+  return l;
 }
 
 // ------------------------------------------------------------------ lists
@@ -520,6 +583,11 @@ function renderStats(shown) {
   if (all.hasPaid && v.type === "c") parts.push(`paid ${(filtered ? vis : all).paid.toFixed(2)}`);
   if (selected.size) parts.push(`${selected.size} selected`);
   $("#stats").textContent = parts.join(" · ");
+  const ch = changeOf(v.entries), chEl = $("#priceChange");
+  if (ch) {
+    const sign = ch.diff > 0.005 ? "+" : ch.diff < -0.005 ? "−" : "±";
+    chEl.innerHTML = ` · <span class="${ch.diff > 0.005 ? "up" : ch.diff < -0.005 ? "down" : ""}">${sign}€${Math.abs(ch.diff).toFixed(2)}</span> since the previous prices (${fmtTime(ch.since)}, ${ch.n} card${ch.n === 1 ? "" : "s"})`;
+  } else chEl.textContent = "";
   const r = fetchedRange(v.entries), note = $("#priceNote");
   note.hidden = !r;
   if (r) {
@@ -561,6 +629,7 @@ function openDetail(e) {
     ["Rarity", esc(e.rarity || c?.rarity || "")], ["Finish", esc(e.finish)],
     v.type === "l" ? ["Set aside", `${e.qty} of ${e.owned} owned`] : ["Quantity", e.qty],
     ["Trend price", fmtPrice(p, cur) + (cardCache[e.k]?.t ? ` <span class="hint">(fetched ${fmtTime(cardCache[e.k].t)})</span>` : "")],
+    ...(prevPriceOf(e) ? [["Previous price", `${fmtPrice(prevPriceOf(e).v, prevPriceOf(e).cur)} <span class="hint">(fetched ${fmtTime(prevPriceOf(e).t)})</span>`]] : []),
   ];
   if (e.from) rows.push(["From", esc(e.from)]);
   if (e.binder) rows.push(["Binder", esc(e.binder)]);
@@ -697,10 +766,10 @@ async function importFile(file) {
   const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
   try {
     if (isImage) await importImage(file);
+    else if (/\.json$/i.test(file.name) || file.type === "application/json") { closeDlg("#importDlg"); await restoreBackup(file); return; }
     else {
       const entries = csvToEntries(await file.text());
-      addCollection(file.name.replace(/\.csv$/i, ""), "csv", entries);
-      toast(`Imported ${entries.length} entries (${cardCount(entries)} cards).`);
+      if (await addCollection(file.name.replace(/\.csv$/i, ""), "csv", entries)) toast(`Imported ${entries.length} entries (${cardCount(entries)} cards).`);
     }
     closeDlg("#importDlg"); msg.textContent = "";
   } catch (err) {
@@ -718,9 +787,9 @@ async function importImage(blob) {
   for (const code of codes) await importCode(code);
 }
 async function importCode(code) {
-  const { title, entries } = await decodeCode(code);
-  addCollection(title, "code", entries);
-  toast(`Imported “${title}”: ${cardCount(entries)} cards.`);
+  const { title, entries, kind } = await decodeCode(code);
+  const done = kind === "list" ? await addListFromCode(title, entries) : await addCollection(title, "code", entries);
+  if (done) toast(`Imported ${kind === "list" ? "list" : ""} “${title}”: ${cardCount(entries)} cards.`.replace("  ", " "));
 }
 async function importText(text) {
   const { codes, missing } = assembleCodes([text]);
@@ -914,7 +983,7 @@ async function refreshShare() {
   const token = s.token = Symbol();
   say(mode === "text" ? "" : "Drawing…");
   try {
-    const code = await encodeCode(title, s.entries);
+    const code = await encodeCode(title, s.entries, currentView()?.type === "l" ? "list" : "collection");
     if (token !== s.token) return;
     s.code = code; s.title = title; s.link = shareBase() + "#" + code;
     const nq = qrTexts(code).length;
@@ -1095,6 +1164,113 @@ function setupCompare() {
   $("#wantChipClear").onclick = () => { F.want = null; renderGrid(); };
 }
 
+
+// ------------------------------------------------------------------ export & backup
+const csvCell = v => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+const csvLine = arr => arr.map(csvCell).join(",");
+const EXPORT = {
+  manabox: { ext: "csv", mime: "text/csv", build(entries, title, v) {
+    // same columns as ManaBox's own export
+    const head = ["Binder Name", "Binder Type", "Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity",
+      "ManaBox ID", "Scryfall ID", "Purchase price", "Misprint", "Altered", "Signed", "Condition", "Language", "Proxy", "Purchase price currency"];
+    return [csvLine(head), ...entries.map(e => { const c = cardFor(e);
+      return csvLine([v.type === "l" ? title : (e.binder || title), v.type === "l" ? "binder" : (e.binderType || "binder"), nameOf(e),
+        (c?.set || e.set).toUpperCase(), e.setName || c?.set_name || "", c?.cn || e.cn, e.finish, e.rarity || c?.rarity || "", e.qty,
+        "", e.sid || c?.id || "", v.type === "l" ? "" : (e.paid ?? ""), "false", "false", "false", e.condition || "near_mint",
+        e.language || "en", "false", v.type === "l" ? "" : (e.paidCur || "")]); })].join("\n") + "\n";
+  } },
+  cardmarket: { ext: "txt", mime: "text/plain", build(entries) {
+    // Cardmarket want lists are by card name: merge printings and finishes
+    const by = new Map();
+    for (const e of entries) { const n = nameOf(e); by.set(n, (by.get(n) || 0) + e.qty); }
+    return [...by].map(([n, q]) => `${q} ${n}`).join("\n") + "\n";
+  } },
+  moxfield: { ext: "txt", mime: "text/plain", build(entries) {
+    return entries.map(e => { const c = cardFor(e);
+      return `${e.qty} ${nameOf(e)} (${(c?.set || e.set).toUpperCase()}) ${c?.cn || e.cn}${e.finish === "foil" ? " *F*" : e.finish === "etched" ? " *E*" : ""}`; }).join("\n") + "\n";
+  } },
+  csv: { ext: "csv", mime: "text/csv", build(entries) {
+    return [csvLine(["Quantity", "Name", "Set code", "Set name", "Collector number", "Finish", "Rarity", "Trend price", "Currency"]),
+      ...entries.map(e => { const c = cardFor(e), [p, cur] = priceOf(e);
+        return csvLine([e.qty, nameOf(e), (c?.set || e.set).toUpperCase(), e.setName || c?.set_name || "", c?.cn || e.cn, e.finish,
+          e.rarity || c?.rarity || "", p === null ? "" : p.toFixed(2), p === null ? "" : cur.toUpperCase()]); })].join("\n") + "\n";
+  } },
+};
+function downloadText(text, filename, mime) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: mime + ";charset=utf-8" })); a.download = filename.replace(/[\\/:*?"<>|]+/g, "_");
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+let exportState = null;
+function renderExport() {
+  const s = exportState; if (!s) return;
+  const fmt = document.querySelector('input[name="fmt"]:checked').value;
+  s.fmt = fmt; s.text = EXPORT[fmt].build(s.entries, s.title, s.view);
+  $("#exportOut").value = s.text; $("#exportMsg").textContent = "";
+}
+async function restoreBackup(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { toast("That file isn't a Binder Share backup.", 6000); return; }
+  if (data?.app !== "Binder Share" || !Array.isArray(data.collections) || !Array.isArray(data.lists)) { toast("That file isn't a Binder Share backup.", 6000); return; }
+  const summary = `${data.collections.length} collection(s) and ${data.lists.length} list(s), saved ${new Date(data.exported).toLocaleString()}.`;
+  const choice = await askChoice("Restore backup", `The backup has ${summary}\n\nMerge adds what you don't have yet (same-named items are kept as copies). Replace deletes everything currently in this browser first.`,
+    [["merge", "Merge", true], ["replace", "Replace all"], [null, "Cancel"]]);
+  if (!choice) return;
+  if (choice === "replace") { collections = data.collections; lists = data.lists; }
+  else {
+    const titles = new Set(collections.map(c => c.title)), names = new Set(lists.map(l => l.name));
+    for (const c of data.collections) {
+      if (collections.some(x => x.id === c.id)) continue;
+      c.title = uniqueName(c.title, titles); titles.add(c.title); collections.push(c);
+    }
+    for (const l of data.lists) {
+      const same = lists.find(x => x.name === l.name);
+      if (same && contentKey(same.items) === contentKey(l.items)) continue;
+      if (lists.some(x => x.id === l.id)) l.id = "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      l.name = uniqueName(l.name, names); names.add(l.name); lists.push(l);
+    }
+  }
+  if (data.want && !load(K.want, "")) save(K.want, data.want);
+  saveCollections(); saveLists();
+  closeDlg("#exportDlg");
+  setView(currentView() ? viewId : collections[0] ? "c:" + collections[0].id : lists[0] ? "l:" + lists[0].id : "");
+  toast(`Restored: now ${collections.length} collection(s) and ${lists.length} list(s).`, 5000);
+}
+function setupExport() {
+  $("#exportBtn").onclick = () => {
+    const v = currentView(), entries = visibleEntries();
+    exportState = { view: v, entries, title: v?.title || "cards" };
+    $("#exportWhat").textContent = v
+      ? `Exports the ${entries.length} entr${entries.length === 1 ? "y" : "ies"} (${cardCount(entries)} cards) currently shown from ${v.type === "l" ? "the list" : "the collection"} “${v.title}”.`
+      : "Nothing to export yet; you can still back up or restore below.";
+    $("#exportCopy").disabled = $("#exportDownload").disabled = !v || !entries.length;
+    $("#backupMsg").textContent = "";
+    if (v) renderExport(); else $("#exportOut").value = "";
+    $("#exportDlg").showModal();
+  };
+  document.querySelectorAll('input[name="fmt"]').forEach(r => r.addEventListener("change", renderExport));
+  $("#exportCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(exportState.text); $("#exportMsg").textContent = "Copied."; }
+    catch { $("#exportMsg").textContent = "Copying was blocked: select the text and copy it manually."; }
+  };
+  $("#exportDownload").onclick = () => {
+    const f = EXPORT[exportState.fmt];
+    downloadText(exportState.text, `${exportState.title} (${exportState.fmt}).${f.ext}`, f.mime);
+    $("#exportMsg").textContent = "Saved.";
+  };
+  $("#backupBtn").onclick = () => {
+    const strip = arr => arr.map(({ uid, notFound, ...e }) => e);
+    const data = { app: "Binder Share", format: 1, version: APP_VERSION, exported: new Date().toISOString(),
+      collections: collections.map(c => ({ ...c, entries: strip(c.entries) })), lists: lists.map(l => ({ ...l, items: strip(l.items) })),
+      want: load(K.want, "") };
+    const d = new Date(), p = n => String(n).padStart(2, "0");
+    downloadText(JSON.stringify(data), `binder-share-backup-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.json`, "application/json");
+    $("#backupMsg").textContent = `Saved ${collections.length} collection(s) and ${lists.length} list(s).`;
+  };
+  $("#restoreBtn").onclick = () => $("#restoreInput").click();
+  $("#restoreInput").onchange = ev => { const f = ev.target.files[0]; ev.target.value = ""; if (f) restoreBackup(f); };
+}
+
 // ------------------------------------------------------------------ setup
 function setupFilters() {
   const pips = $("#pips");
@@ -1180,7 +1356,7 @@ async function init() {
   if (pageVersion !== APP_VERSION) {
     toast("The site was just updated: reload the page (Ctrl+F5) to get the latest version.", 15000);
   }
-  setupFilters(); setupViews(); setupGrid(); setupImport(); setupShare(); setupCompare();
+  setupFilters(); setupViews(); setupGrid(); setupImport(); setupShare(); setupCompare(); setupExport();
   if (!currentView()) viewId = collections[0] ? "c:" + collections[0].id : lists[0] ? "l:" + lists[0].id : "";
   setView(viewId);
   // opened from a share link?

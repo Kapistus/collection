@@ -24,11 +24,23 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 - **Show owned in gallery** filters the collection down to the matching cards.
 - **Set aside owned…** puts the matching copies into a list, so you know what to pull from your binders.
 
+**Importing again:** re-importing an unchanged file, image or list does nothing. If one with the same name exists but differs, the site asks whether to **Replace** it or **Keep both**. A list shared from a list imports as an editable list, so keeping the latest share image in a chat works as a sync between devices.
+
+**Export** (for the cards currently shown) has four formats:
+- **ManaBox CSV:** the same columns as ManaBox's own export.
+- **Cardmarket want list:** `1 Card Name` lines, merged by name.
+- **Moxfield / Archidekt / Arena text:** `1 Sol Ring (DSC) 94 *F*`.
+- **Spreadsheet CSV:** quantity, name, set, number, finish, rarity and price.
+
+Each can be copied or downloaded.
+
+**Backup:** Export → **Download backup** saves all collections, lists and your last want list to a `.json` file. Restore it with **Restore from backup…**, or by dropping the file on the page. You can merge it with what you have, or replace everything.
+
 A share image still imports after chat apps shrink it and convert it to JPEG. In testing, a full 732-entry collection decoded exactly from a 745 px wide JPEG.
 
 ## What the share code contains
 
-Title, set code, collector number, quantity and finish. Nothing else, so no prices paid, condition, language or binders. Card details and current prices are fetched from Scryfall when viewing.
+Title, whether it's a list or a collection, set code, collector number, quantity and finish. Nothing else, so no prices paid, condition, language or binders. Card details and current prices are fetched from Scryfall when viewing.
 
 - One QR code holds about 2,600 characters, roughly 800 entries. Bigger lists are split into several QR codes in the same image, and the site reads them all.
 - **Format:** `MTG1:` + base64url(deflate-raw(text)). The text is `title` on the first line, then `set:cn[*qty][!f|!e],cn…;set:…` on the second line.
@@ -47,6 +59,7 @@ There's no build step. When you change `app.js` or `style.css`, bump the version
 - Card data comes from `POST /cards/collection` in batches of up to 75, with 100 ms between requests.
 - Data is cached in the browser for 24 hours; Scryfall updates prices daily.
 - **Prices:** Scryfall's EUR price, which is Cardmarket's Trend Price. When a card has no trend, Scryfall falls back to Cardmarket's 1-day average, 7-day average, average or suggested price. Foils use the foil trend. Cards with no EUR price at all show Scryfall's USD price instead, marked with $.
+- **Price change:** the status bar shows how much the value of the collection or list has changed since the previous, different prices (for example `+€2.00`), and the card details show each card's previous price. Only cards with a price history and EUR prices are counted.
 - The status bar shows the value of the whole collection or list (and of the filtered cards, when a filter is on) and when the prices were fetched. **Refresh** refetches prices older than an hour.
 - Images load from Scryfall's image servers.
 

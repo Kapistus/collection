@@ -42,7 +42,7 @@ kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-si
 .brand { font-weight: 700; font-size: 17px; }
 .viewpick { display: flex; gap: 6px; align-items: center; flex: 1 1 280px; min-width: 0; }
 .viewpick select { flex: 1 1 auto; min-width: 0; max-width: 420px; }
-.actions { display: flex; gap: 6px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .only-narrow { display: none; }
 
 /* layout */
@@ -189,6 +189,9 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 @media (max-width: 760px) {
   .only-narrow { display: inline-block; }
   .brand { display: none; }
+  .topbar { padding: 8px 10px; }
+  .topbar button { padding: 5px 9px; }
+  .viewpick { flex-basis: 100%; }
   .sidebar {
     display: none; position: fixed; top: 0; left: 0; bottom: 0; z-index: 40; width: min(300px, 86vw);
     max-height: none; background: var(--panel); box-shadow: 0 0 30px rgba(0,0,0,.35);
@@ -223,3 +226,18 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .pricenote { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .statusbar #stats { color: var(--fg); }
 #codeOut { word-break: break-all; resize: vertical; min-height: 4.5em; }
+
+/* export, backup, choice dialog, price change */
+.dlg.narrow { width: min(460px, 94vw); }
+.formats { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.formats .check { align-items: flex-start; }
+.formats .check input { margin-top: 3px; }
+#exportOut { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre; }
+.row-btns { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.row-btns .msg { margin: 0; }
+.sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0 10px; }
+.subhead { margin: 0 0 4px; font-size: 16px; }
+.up { color: #2e7d32; font-weight: 600; }
+.down { color: var(--danger); font-weight: 600; }
+@media (prefers-color-scheme: dark) { .up { color: #81c784; } }
+#askText { white-space: pre-line; margin: 0; }
