@@ -260,3 +260,4 @@ footer { color: var(--muted); font-size: 12px; text-align: center; padding: 14px
 .ask-radios .check { align-items: flex-start; }
 .ask-radios .check input { margin-top: 3px; }
 #askHint { margin-top: 8px; }
+.ask-result { margin: 10px 0 0; font-weight: 600; }

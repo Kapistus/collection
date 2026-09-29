@@ -30,7 +30,7 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 2. **A changed version** of one of them: the site asks whether to **merge** it into a collection or list (the best match is preselected in a dropdown listing all your collections and lists) or **create a new** one. **Replace selected** is also offered; it's the only option that removes cards, such as ones you've sold.
 3. **No cards in common** (no printing and finish in common): **merge** into any collection or list you pick, or **create a new** one.
 
-**When merging**, choose how cards already in the target are handled. A card counts as already there when the same printing and finish is, in any binder, condition or language. The dialog shows how many of the imported entries are already there, for whichever collection or list is selected.
+**When merging**, choose how cards already in the target are handled. A card counts as already there when the same printing and finish is, in any binder, condition or language. For whichever collection or list is selected, the dialog shows how many of the imported cards are already there, and a **Result** line with exactly what the chosen option will add, change or skip, and the card count before and after.
 - **Only cards that aren't there yet:** printings already there are skipped and left as they are.
 - **New cards and changed quantities:** best for a newer ManaBox export of the same collection. ManaBox rows are matched exactly (card, finish, binder, condition, language and "Added" time): a known row takes the new quantity, any other row is added. If the file's rows don't match the selected collection's, the dialog warns that this mode would add those cards as extra rows.
 - **Everything, adding quantities together:** for combining separate piles of cards. Copies are added to a matching entry (same row, else same printing, condition and language, else same printing) instead of creating a second one.
@@ -55,7 +55,7 @@ A share image still imports after chat apps shrink it and convert it to JPEG. In
 
 ## What the share code contains
 
-Title, whether it's a list or a collection, set code, collector number, quantity and finish. Nothing else, so no prices paid, condition, language or binders. Card details and current prices are fetched from Scryfall when viewing.
+Title, whether it's a list or a collection, set code, collector number, quantity and finish. Nothing else, so no purchase prices, condition, language or binders. Card details and current prices are fetched from Scryfall when viewing.
 
 - One QR code holds about 2,600 characters, roughly 800 entries. Bigger lists are split into several QR codes in the same image, and the site reads them all.
 - **Format:** `MTG1:` + base64url(deflate-raw(text)). The text is `title` on the first line, then `set:cn[*qty][!f|!e],cn…;set:…` on the second line.
@@ -77,6 +77,7 @@ There's no build step. When you change `app.js` or `style.css`, bump the version
 - **Price change:** the status bar shows how much the value of the collection or list has changed since the previous, different prices (for example `+€2.00`), and the card details show each card's previous price. Only cards with a price history and EUR prices are counted.
 - The status bar shows the value of the whole collection or list (and of the filtered cards, when a filter is on) and when the prices were fetched. **Refresh** refetches prices older than an hour.
 - Images load from Scryfall's image servers.
+- **Price when added:** ManaBox's *Purchase price* column, shown in the card details and as *value when added* in the status bar. ManaBox fills it with the card's price on the day it was added, unless you entered your own.
 
 ## Third-party code (in `vendor/`)
 

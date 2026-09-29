@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.27-16";
+const APP_VERSION = "2026.09.28-1";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -372,9 +372,6 @@ function askChoice(title, text, buttons, rememberKey = null, select = null, radi
       for (const [v, l] of select.options) sel.add(new Option(l, v));
       sel.value = select.value;
     }
-    const hint = $("#askHint");
-    const showHint = () => { const t = select?.hint?.(sel.value); hint.hidden = !t; hint.textContent = t || ""; };
-    sel.onchange = showHint; showHint();
     const rbox = $("#askRadios"), rlist = $("#askRadioList");
     rbox.hidden = !radios; rlist.innerHTML = "";
     if (radios) {
@@ -386,6 +383,13 @@ function askChoice(title, text, buttons, rememberKey = null, select = null, radi
         rlist.append(l);
       }
     }
+    const hint = $("#askHint");
+    const result2 = $("#askResult");
+    const showHint = () => {
+      let t = select?.hint?.(sel.value, rlist.querySelector("input:checked")?.value) || ""; if (!Array.isArray(t)) t = [t, ""];
+      hint.hidden = !t[0]; hint.textContent = t[0]; result2.hidden = !t[1]; result2.textContent = t[1];
+    };
+    sel.onchange = showHint; rlist.onchange = showHint; showHint();
     const last = rememberKey ? load(rememberKey, null) : null;
     const preferred = buttons.some(([v]) => v !== null && v !== "cancel" && v === last) ? last : buttons.find(b => b[2])?.[0];
     let result = null, focusBtn = null;
@@ -427,20 +431,21 @@ function mergeInto(col, entries, kind = "csv", mode = "update") {
   const index = e => { rows.set(rowKey(e), e); if (!stacks.has(stackKey(e))) stacks.set(stackKey(e), e); if (!items.has(itemKey(e))) items.set(itemKey(e), e); };
   col.entries.forEach(index);
   let added = 0, updated = 0, same = 0;
-  const push = e => { const n = { ...e }; col.entries.push(n); index(n); added++; };
+  let gained = 0;
+  const push = e => { const n = { ...e }; col.entries.push(n); index(n); added++; gained += e.qty; };
   for (const e of entries) {
     if (mode === "missing") { if (items.has(itemKey(e))) same++; else push(e); continue; }
     if (mode === "all") {
       const old = (byRow && rows.get(rowKey(e))) || stacks.get(stackKey(e)) || items.get(itemKey(e));
-      if (old) { old.qty += e.qty; updated++; } else push(e);
+      if (old) { old.qty += e.qty; gained += e.qty; updated++; } else push(e);
       continue;
     }
     const old = byRow ? rows.get(rowKey(e)) : items.get(itemKey(e));
     if (!old) push(e);
-    else if (old.qty !== e.qty) { old.qty = e.qty; updated++; }
+    else if (old.qty !== e.qty) { gained += e.qty - old.qty; old.qty = e.qty; updated++; }
     else same++;
   }
-  return { added, updated, same, mode };
+  return { added, updated, same, mode, gained };
 }
 /** How many entries of collection c have a printing + finish that is also in `entries`. */
 function overlap(c, entries) {
@@ -465,15 +470,15 @@ const toListItem = (e, from) => ({ k: e.k, set: e.set, cn: e.cn, finish: e.finis
 /** Merge into a list by printing + finish: new printings are added, known ones take the new quantity. */
 function mergeIntoList(l, entries, from, mode = "update") {
   const byKey = new Map(l.items.map(i => [itemKey(i), i]));
-  let added = 0, updated = 0, same = 0;
+  let added = 0, updated = 0, same = 0, gained = 0;
   for (const e of entries) {
     const old = byKey.get(itemKey(e));
-    if (!old) { const it = toListItem(e, from); l.items.push(it); byKey.set(itemKey(e), it); added++; }
-    else if (mode === "all") { old.qty += e.qty; old.owned = Math.max(old.owned || 0, old.qty); updated++; }
-    else if (mode === "update" && old.qty !== e.qty) { old.qty = e.qty; old.owned = Math.max(old.owned || 0, e.qty); updated++; }
+    if (!old) { const it = toListItem(e, from); l.items.push(it); byKey.set(itemKey(e), it); added++; gained += e.qty; }
+    else if (mode === "all") { old.qty += e.qty; gained += e.qty; old.owned = Math.max(old.owned || 0, old.qty); updated++; }
+    else if (mode === "update" && old.qty !== e.qty) { gained += e.qty - old.qty; old.qty = e.qty; old.owned = Math.max(old.owned || 0, e.qty); updated++; }
     else same++;
   }
-  return { added, updated, same, mode };
+  return { added, updated, same, mode, gained };
 }
 /** Every collection and list the import could go into. */
 function importTargets() {
@@ -537,29 +542,49 @@ async function importCards(title, kind, entries, asList = false) {
   const best = scored[0].n > 0 ? scored[0] : null;
   const cur = currentView();
   const preselect = best?.t.id || targets.find(t => t.id === load(K.lastTarget, ""))?.id || (cur && targets.find(t => t.id === viewId)?.id) || targets[0].id;
-  const text = best
-    ? `This ${what} (${entries.length} entries, ${cardCount(entries)} cards) has cards in common with your ${best.t.type === "c" ? "collection" : "list"} “${best.t.title}”.`
-    : `None of the ${entries.length} entries (${cardCount(entries)} cards) in this ${what} are in your existing collections or lists.`;
+  const unit = kind === "csv" ? "row" : "entry", units = kind === "csv" ? "rows" : "entries";
+  const nf = n => n.toLocaleString("en-US");
+  const plural = (n, one, many) => `${nf(n)} ${n === 1 ? one : many}`;
+  const typeName = t => t.type === "c" ? "collection" : "list";
+  const text = (best
+    ? `This ${what} has ${plural(cardCount(entries), "card", "cards")} in ${plural(entries.length, unit, units)}. Some of them are already in your ${typeName(best.t)} “${best.t.title}”.`
+    : `None of the ${plural(cardCount(entries), "card", "cards")} in this ${what} are in your collections or lists.`) +
+    `\n\n• Merge into selected: adds this ${what} to the collection or list chosen below, whatever its name. Nothing is removed.` +
+    (best ? `\n• Replace selected: the chosen one becomes exactly this ${what}. Cards that aren't in it are removed.` : "") +
+    `\n• ${newLabel}: keeps this ${what} separate.`;
+  // dry run of a merge, for the preview under the dropdown
+  const preview = (t, mode) => {
+    const before = cardCount(t.entries);
+    const r = t.type === "c"
+      ? (c => mergeInto(c, entries, asList ? "code" : kind, mode))({ kind: t.obj.kind, entries: t.entries.map(e => ({ ...e })) })
+      : (l => mergeIntoList(l, entries, from, mode))({ items: t.entries.map(e => ({ ...e })) });
+    return { ...r, before, after: before + r.gained };
+  };
   const buttons = [["merge", "Merge into selected", true], ["new", newLabel]];
   if (best) buttons.push(["replace", "Replace selected"]);
   buttons.push(["cancel", "Cancel"]);
   const res = await askChoice(best ? "Update an existing collection or list?" : "Merge or create new?",
-    text + "\n\nMerging never removes cards." +
-    (best ? "\nReplace makes the selected one exactly this " + what + " (cards not in it are removed)." : "") +
-    "\nYou can pick any collection or list below, whatever its name.",
-    buttons, best ? K.choiceUpdate : K.choiceNew,
+    text, buttons, best ? K.choiceUpdate : K.choiceNew,
     { label: "Into", options: targets.map(t => [t.id, targetLabel(t)]), value: preselect,
-      hint: id => { const t = targets.find(x => x.id === id); if (!t) return "";
-        const { cards: n, rows } = presentIn(t, entries, kind); const m = entries.length - n;
-        let h = `${n} of the ${entries.length} imported entr${entries.length === 1 ? "y is a card" : "ies are cards"} already in “${t.title}” (same printing and finish), ${m} ${m === 1 ? "is" : "are"} new.`;
+      hint: (id, mode) => { const t = targets.find(x => x.id === id); if (!t) return "";
+        const { cards: n, rows } = presentIn(t, entries, kind);
+        let h = `${nf(n)} of the ${plural(entries.length, unit, units)} in this ${what} ${n === 1 ? "is a card" : "are cards"} already in “${t.title}”, ${nf(entries.length - n)} ${entries.length - n === 1 ? "is" : "are"} not.`;
         if (rows !== null && n > rows) h += rows
-          ? ` Only ${rows} match its rows exactly; with “New cards and changed quantities” the other ${n - rows} are added as extra rows (another binder, condition, language or scan time).`
-          : ` None match its rows exactly, so this isn't a newer export of it: “New cards and changed quantities” would add those ${n} as extra rows (another binder, condition, language or scan time).`;
-        return h; } },
+          ? ` Only ${nf(rows)} of them match its rows exactly (same binder, condition, language and scan date).`
+          : ` None of them match its rows exactly (same binder, condition, language and scan date), so this isn't a newer export of it.`;
+        if (!mode) return h;
+        const r = preview(t, mode), parts = [];
+        if (r.added) parts.push(`adds ${plural(r.added, unit, units)}`);
+        if (r.updated) parts.push(mode === "all" ? `adds copies to ${plural(r.updated, unit, units)} already there` : `changes the quantity of ${plural(r.updated, unit, units)}`);
+        if (r.same) parts.push(`skips ${plural(r.same, unit, units)} already there`);
+        return [h, `Result: ${parts.join(", ") || "nothing changes"}. “${t.title}” ` +
+          (r.after === r.before ? `stays at ${plural(r.before, "card", "cards")}.` : `goes from ${plural(r.before, "card", "cards")} to ${nf(r.after)}.`)]; } },
     { label: "When merging", rememberKey: K.mergeMode, value: load(K.mergeMode, "update"), options: [
-      ["missing", "<b>Only cards that aren't there yet</b> <span class=\"hint\">a card counts as there if the same printing and finish is, in any binder</span>"],
-      ["update", "<b>New cards and changed quantities</b> <span class=\"hint\">best for a newer ManaBox export of the same collection</span>"],
-      ["all", "<b>Everything, adding quantities together</b> <span class=\"hint\">for combining separate piles of cards</span>"]] });
+      ["missing", "<b>Only add cards that aren't there yet</b><br><span class=\"hint\">Skips cards already there: same set, collector number and foil, in any binder, condition or language.</span>"],
+      ["update", kind === "csv"
+        ? "<b>Update from a newer ManaBox export</b><br><span class=\"hint\">For re-importing your collection after scanning more cards. Rows that match exactly (also binder, condition, language and scan date) get the file's quantity. Other rows are added, even for cards already there.</span>"
+        : "<b>Update from a newer version</b><br><span class=\"hint\">For re-importing an updated share of the same collection or list. Cards already there get the share's quantity. New cards are added.</span>"],
+      ["all", `<b>Add everything</b><br><span class=\"hint\">For combining separate piles. Cards already there get the ${what}'s quantity added to theirs.</span>`]] });
   if (!res || res.choice === "cancel") return null;
   if (res.choice === "new") return createNew();
   const target = importTargets().find(t => t.id === res.target);
@@ -749,7 +774,7 @@ function renderStats(shown) {
   const label = v.type === "c" ? "collection" : "list";
   const parts = [`${shown.length} of ${v.entries.length} entries`, `${cardCount(shown)} cards`];
   parts.push(filtered ? `shown ${fmtValue(vis)} · whole ${label} ${fmtValue(all)}` : `${label} value ${fmtValue(all)}`);
-  if (all.hasPaid && v.type === "c") parts.push(`paid ${(filtered ? vis : all).paid.toFixed(2)}`);
+  if (all.hasPaid && v.type === "c") parts.push(`value when added ${(filtered ? vis : all).paid.toFixed(2)}`);
   if (selected.size) parts.push(`${selected.size} selected`);
   $("#stats").textContent = parts.join(" · ");
   const ch = changeOf(v.entries), chEl = $("#priceChange");
@@ -804,7 +829,7 @@ function openDetail(e) {
   if (e.binder) rows.push(["Binder", esc(e.binder)]);
   if (e.condition) rows.push(["Condition", esc(e.condition.replace(/_/g, " "))]);
   if (e.language) rows.push(["Language", esc(e.language)]);
-  if (e.paid != null) rows.push(["Paid", `${e.paid.toFixed(2)} ${esc(e.paidCur || "")}`]);
+  if (e.paid != null) rows.push(["Price when added", `${e.paid.toFixed(2)} ${esc(e.paidCur || "")} <span class="hint">(ManaBox's purchase price: the card's price on the day it was added, unless you entered your own)</span>`]);
   $("#detailBody").innerHTML = `<div class="imgs">${imageUrls(c, "large").map(u => `<img src="${esc(u)}" alt="" crossorigin="anonymous">`).join("")}</div>
     <div class="txt"><h3>${esc(nameOf(e))}</h3>
     ${blocks.map(b => `${c.faces.length ? `<b>${esc(b.name)}</b> ` : ""}${esc(b.mana_cost || "")}<br><i>${esc(b.type_line || "")}</i>
