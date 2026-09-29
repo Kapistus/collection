@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.28-1";
+const APP_VERSION = "2026.09.29-1";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -748,13 +748,27 @@ function renderActiveList() {
 }
 /** Value of entries: Cardmarket trend in EUR; cards with no EUR price fall back to USD and are summed separately. */
 function valueOf(entries) {
-  let eur = 0, usd = 0, missing = 0, paid = 0, hasPaid = false;
+  let eur = 0, usd = 0, missing = 0, hasPaid = false, paidNow = 0, paidThen = 0;
+  const paid = {};   // price when added (ManaBox purchase price), per currency
   for (const e of entries) {
     const [p, cur] = priceOf(e);
     if (p === null) missing += e.qty; else if (cur === "eur") eur += p * e.qty; else usd += p * e.qty;
-    if (e.paid != null) { paid += e.paid * e.qty; hasPaid = true; }
+    if (e.paid != null) {
+      const pc = (e.paidCur || "EUR").toUpperCase();
+      paid[pc] = (paid[pc] || 0) + e.paid * e.qty; hasPaid = true;
+      if (p !== null && cur === pc.toLowerCase()) { paidNow += p * e.qty; paidThen += e.paid * e.qty; }   // same currency: comparable
+    }
   }
-  return { eur, usd, missing, paid, hasPaid };
+  return { eur, usd, missing, paid, hasPaid, paidDiff: paidNow - paidThen };
+}
+const curSym = c => ({ EUR: "€", USD: "$", GBP: "£" })[(c || "").toUpperCase()] ?? (c ? c.toUpperCase() + " " : "");
+const fmtMoney = (n, c) => (n < 0 ? "−" : "") + curSym(c) + Math.abs(n).toFixed(2);
+const signedMoney = (n, c) => (n > 0.005 ? "+" : n < -0.005 ? "−" : "±") + curSym(c) + Math.abs(n).toFixed(2);
+/** "value when added €2373.16 (+€2.54 since)"; the change compares only cards priced in the same currency then and now. */
+function fmtPaid(v) {
+  const curs = Object.keys(v.paid).sort((a, b) => (b === "EUR") - (a === "EUR"));
+  const main = curs[0] || "EUR";
+  return "value when added " + curs.map(c => fmtMoney(v.paid[c], c)).join(" + ") + ` (${signedMoney(v.paidDiff, main)} since)`;
 }
 const fmtValue = v => `€${v.eur.toFixed(2)}` + (v.usd ? ` + $${v.usd.toFixed(2)}` : "");
 function fmtTime(t) {
@@ -774,7 +788,7 @@ function renderStats(shown) {
   const label = v.type === "c" ? "collection" : "list";
   const parts = [`${shown.length} of ${v.entries.length} entries`, `${cardCount(shown)} cards`];
   parts.push(filtered ? `shown ${fmtValue(vis)} · whole ${label} ${fmtValue(all)}` : `${label} value ${fmtValue(all)}`);
-  if (all.hasPaid && v.type === "c") parts.push(`value when added ${(filtered ? vis : all).paid.toFixed(2)}`);
+  if (all.hasPaid && v.type === "c") parts.push(fmtPaid(filtered ? vis : all));
   if (selected.size) parts.push(`${selected.size} selected`);
   $("#stats").textContent = parts.join(" · ");
   const ch = changeOf(v.entries), chEl = $("#priceChange");
@@ -829,7 +843,7 @@ function openDetail(e) {
   if (e.binder) rows.push(["Binder", esc(e.binder)]);
   if (e.condition) rows.push(["Condition", esc(e.condition.replace(/_/g, " "))]);
   if (e.language) rows.push(["Language", esc(e.language)]);
-  if (e.paid != null) rows.push(["Price when added", `${e.paid.toFixed(2)} ${esc(e.paidCur || "")} <span class="hint">(ManaBox's purchase price: the card's price on the day it was added, unless you entered your own)</span>`]);
+  if (e.paid != null) rows.push(["Price when added", `${esc(fmtMoney(e.paid, e.paidCur || "EUR"))} <span class="hint">(ManaBox's purchase price: the card's price on the day it was added, unless you entered your own)</span>`]);
   $("#detailBody").innerHTML = `<div class="imgs">${imageUrls(c, "large").map(u => `<img src="${esc(u)}" alt="" crossorigin="anonymous">`).join("")}</div>
     <div class="txt"><h3>${esc(nameOf(e))}</h3>
     ${blocks.map(b => `${c.faces.length ? `<b>${esc(b.name)}</b> ` : ""}${esc(b.mana_cost || "")}<br><i>${esc(b.type_line || "")}</i>

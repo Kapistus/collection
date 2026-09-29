@@ -77,7 +77,7 @@ There's no build step. When you change `app.js` or `style.css`, bump the version
 - **Price change:** the status bar shows how much the value of the collection or list has changed since the previous, different prices (for example `+€2.00`), and the card details show each card's previous price. Only cards with a price history and EUR prices are counted.
 - The status bar shows the value of the whole collection or list (and of the filtered cards, when a filter is on) and when the prices were fetched. **Refresh** refetches prices older than an hour.
 - Images load from Scryfall's image servers.
-- **Price when added:** ManaBox's *Purchase price* column, shown in the card details and as *value when added* in the status bar. ManaBox fills it with the card's price on the day it was added, unless you entered your own.
+- **Price when added:** ManaBox's *Purchase price* column, shown in the card details and as *value when added* in the status bar, with the change since then (for example `value when added €2373.16 (+€2.54 since)`). The change only counts cards whose price then and now is in the same currency. ManaBox fills it with the card's price on the day it was added, unless you entered your own.
 
 ## Third-party code (in `vendor/`)
 
