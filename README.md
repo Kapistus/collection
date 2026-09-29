@@ -7,9 +7,12 @@ View, filter and share Magic: The Gathering collections from ManaBox CSV exports
 - **Import:** drop a ManaBox CSV export on the page, or use **Import → Choose file**.
 - **Browse:** search, sort, and filter by set, keyword, type, color identity, rarity, foil and binder. Click a card for details.
 - **Set aside** cards into lists, like Cardmarket want lists. This never changes the collection.
-  - **Add:** use **+** on a card, right-click, or long-press on touch.
+  - **Add:** click a card and use **Set aside 1** in its details, or right-click (long-press on touch).
   - **Add several:** Ctrl/Shift-click to select cards, then press **A**.
   - **Edit a list:** open it from the dropdown at the top. Use **+**/**−** or **Del**, or right-click.
+- **Remove cards from a collection:** right-click a card (long-press on touch) → **Remove from collection…**, use the button in the card details, or select cards and press **Del**. You're always asked first, and **Cancel** is the default. For cards with several copies you can remove one copy or all. **Undo** is offered for 10 seconds afterwards.
+  - This only changes the collection on this site, not ManaBox. Merging a later ManaBox export that still has the cards adds them back; remove them in ManaBox too, or use **Replace selected** when importing.
+  - Lists aren't changed when cards are removed from a collection.
 - **Share** (applies to the cards currently shown) has three modes:
   - **Card sheet:** an image of the cards, or a text list above 150 entries, with the QR code in the corner.
   - **QR code only:** just the QR code with the title and card count. This is the smallest image.

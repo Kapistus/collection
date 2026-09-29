@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Binder Share</title>
 <meta name="description" content="View, filter and share Magic: The Gathering collections from ManaBox CSV exports. No accounts, nothing stored on a server.">
-<meta name="app-version" content="2026.09.29-1">
-<link rel="stylesheet" href="style.css?v=2026.09.29-1">
+<meta name="app-version" content="2026.09.29-3">
+<link rel="stylesheet" href="style.css?v=2026.09.29-3">
 </head>
 <body>
 <header class="topbar">
@@ -67,7 +67,8 @@
     <div class="sidebox" id="setAsideBox">
       <div class="sidelabel">Set aside to</div>
       <select id="activeList"></select>
-      <p class="hint">Use <b>+</b> on a card, right-click (long-press on touch), or select cards with Ctrl/Shift-click and press <kbd>A</kbd>.</p>
+      <p class="hint">Click a card and use <b>Set aside 1</b>, right-click (long-press on touch), or select cards with Ctrl/Shift-click and press <kbd>A</kbd>.</p>
+      <p class="hint">To remove cards from the collection, right-click them or select them and press <kbd>Del</kbd>. You're always asked first.</p>
     </div>
     <div class="sidebox" id="listBox" hidden>
       <p class="hint">In a list: <b>+</b>/<b>−</b> on a card, right-click for more. Select cards and press <kbd>Del</kbd> to remove.</p>
@@ -233,6 +234,6 @@
 
 <script src="vendor/qrcode-generator.js?v=2.0.4"></script>
 <script src="vendor/zxing-reader.js?v=3.1.4"></script>
-<script src="app.js?v=2026.09.29-1"></script>
+<script src="app.js?v=2026.09.29-3"></script>
 </body>
 </html>

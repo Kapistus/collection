@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.29-1";
+const APP_VERSION = "2026.09.29-3";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -29,8 +29,14 @@ function hashStr(s) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h
 function cnKey(cn) { const m = /^(\d+)/.exec(cn || ""); return [m ? parseInt(m[1], 10) : 1e9, cn || ""]; }
 function cmp(a, b) { for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) return -1; if (a[i] > b[i]) return 1; } return 0; }
 let toastTimer;
-function toast(msg, ms = 3500) {
+/** Short message at the bottom; `action` = [label, fn] adds a button (e.g. Undo). */
+function toast(msg, ms = 3500, action = null) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  if (action) {
+    const b = document.createElement("button"); b.textContent = action[0];
+    b.onclick = () => { t.hidden = true; clearTimeout(toastTimer); action[1](); };
+    t.append(" ", b);
+  }
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, ms);
 }
 
@@ -648,6 +654,35 @@ function changeQty(entries, delta) {
   }
   saveLists(); setView(viewId);
 }
+/** Remove cards from the collection being viewed, after confirmation (Cancel is the default). Undo is offered afterwards. */
+async function removeFromCollection(entries) {
+  const v = currentView(); if (!v || v.type !== "c" || !entries.length) return;
+  const col = v.obj, one = entries.length === 1, e0 = entries[0], n = cardCount(entries);
+  const copies = q => `${q} ${q === 1 ? "copy" : "copies"}`;
+  const desc = e => `${nameOf(e)} (${e.set.toUpperCase()} #${e.cn}${e.finish !== "normal" ? ", " + e.finish : ""}${e.binder ? `, binder “${e.binder}”` : ""})`;
+  const names = entries.slice(0, 8).map(e => `• ${desc(e)}${e.qty > 1 ? " ×" + e.qty : ""}`).join("\n") + (entries.length > 8 ? `\n… and ${entries.length - 8} more` : "");
+  const text = (one ? `Remove ${desc(e0)} from “${v.title}”? The collection has ${copies(e0.qty)} of it.`
+                    : `Remove these ${entries.length} entries (${n} cards) from “${v.title}”?\n\n${names}`) +
+    "\n\nThis only changes the collection on this site, not in ManaBox. If you later merge a ManaBox export that still has these cards, they're added back." +
+    "\nLists you've set cards aside to are not changed.";
+  const buttons = [["cancel", "Cancel", true]];
+  if (entries.some(e => e.qty > 1)) buttons.push(["one", one ? "Remove 1 copy" : "Remove 1 copy of each"]);
+  buttons.push(["all", one ? (e0.qty > 1 ? `Remove all ${e0.qty} copies` : "Remove") : `Remove all ${n} cards`]);
+  const choice = await askChoice(one ? "Remove from collection?" : `Remove ${entries.length} entries from collection?`, text, buttons);
+  if (!choice) return;
+  const before = JSON.stringify(col.entries), targets = new Set(entries);
+  let removed = 0;
+  if (choice === "one") {
+    for (const e of targets) { e.qty -= 1; removed++; }
+    col.entries = col.entries.filter(e => e.qty > 0);
+  } else {
+    removed = n; col.entries = col.entries.filter(e => !targets.has(e));
+  }
+  saveCollections(); setView(viewId);
+  toast(`Removed ${removed} card${removed === 1 ? "" : "s"} from “${col.title}”.`, 10000, ["Undo", () => {
+    col.entries = JSON.parse(before); saveCollections(); setView("c:" + col.id); toast("Removal undone.");
+  }]);
+}
 const selectedEntries = () => { const v = currentView(); return v ? v.entries.filter(e => selected.has(e.uid)) : []; };
 
 // ------------------------------------------------------------------ filtering / sorting
@@ -813,7 +848,7 @@ function tileHTML(e, isList) {
     : `<div class="ph"><b>${esc(name)}</b><span>${esc(e.set.toUpperCase())} #${esc(e.cn)}</span>${e.notFound ? "<span>(not found on Scryfall)</span>" : ""}</div>`;
   const btns = isList
     ? `<button data-act="minus" title="One less">−</button><button data-act="plus" title="One more">+</button>`
-    : `<button data-act="aside" title="Set aside 1">+</button>`;
+    : "";   // collection: set aside from the card details, right-click menu or A
   return `<figure class="tile${selected.has(e.uid) ? " sel" : ""}" data-uid="${esc(e.uid)}">
     <div class="art">${art}${e.qty > 1 ? `<span class="badge">×${e.qty}${isList && e.owned > e.qty ? "/" + e.owned : ""}</span>` : ""}${e.finish !== "normal" ? `<span class="foil">${e.finish.toUpperCase()}</span>` : ""}</div>
     <figcaption class="cap"><div class="meta"><div class="nm" title="${esc(name)}">${esc(name)}</div>
@@ -864,6 +899,7 @@ function openDetail(e) {
       if (id === "__new") { const l = newList(); if (!l) return; id = l.id; }
       setAside([e], id); openDetail(e);
     }, "primary");
+    btn("Remove from collection…", () => { closeDlg("#detailDlg"); removeFromCollection([e]); });
   } else {
     btn("− One less", () => { changeQty([e], -1); closeDlg("#detailDlg"); });
     btn("+ One more", () => { changeQty([e], +1); const it = currentView()?.entries.find(x => x.uid === e.uid); if (it) openDetail(it); });
@@ -889,6 +925,8 @@ function showMenu(x, y, entries) {
     for (const l of lists) if (l !== active) item(`Set aside to “${l.name}”`, "", () => setAside(entries, l.id));
     m.append(document.createElement("hr"));
     item("New list…", "", () => { const l = newList(); if (l) setAside(entries, l.id); });
+    m.append(document.createElement("hr"));
+    item("Remove from collection…", "Del", () => removeFromCollection(entries));
   } else {
     item("One more", "+", () => changeQty(entries, +1));
     item("One less", "−", () => changeQty(entries, -1));
@@ -960,6 +998,8 @@ function setupGrid() {
       ev.preventDefault();
       if (!lists.some(l => l.id === activeListId)) { if (!newList()) return; }
       setAside(sel, activeListId);
+    } else if (v.type === "c" && (ev.key === "Delete" || ev.key === "Backspace")) {
+      ev.preventDefault(); removeFromCollection(sel);
     } else if (v.type === "l") {
       if (ev.key === "Delete" || ev.key === "Backspace") { ev.preventDefault(); changeQty(sel, null); }
       else if (ev.key === "+") changeQty(sel, +1);
