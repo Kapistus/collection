@@ -96,7 +96,18 @@ main { flex: 1; min-width: 0; padding: 0 16px 24px; }
   position: absolute; font-size: 12px; font-weight: 700; color: #fff; border-radius: 10px; padding: 2px 7px;
   pointer-events: none;
 }
-.badge { top: 5%; right: 6%; background: rgba(0,0,0,.78); }
+/* quantity: a half-transparent white ball above the middle of the card picture, scaled with the card size */
+.tile .art { container-type: inline-size; }
+.badge {
+  top: 40%; left: 50%; transform: translate(-50%, -50%); width: 42cqw; aspect-ratio: 1; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; opacity: .5;
+  background: #fff; color: #000; box-shadow: 0 2px 8px rgba(0,0,0,.6);
+}
+.badge b {
+  width: 56%; display: flex; align-items: center; justify-content: center; font-size: 15cqw; font-weight: 800; line-height: 1;
+}
+.badge.l3 b { font-size: 10cqw; } .badge.l4 b { font-size: 8cqw; } .badge.l5 b { font-size: 6.5cqw; }
+.badge.l3 b, .badge.l4 b, .badge.l5 b { letter-spacing: -.03em; }
 .foil { bottom: 4%; left: 6%; background: rgba(90,60,160,.92); }
 .cap { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--muted); }
 .cap .meta { flex: 1; min-width: 0; overflow: hidden; }

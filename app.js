@@ -4,7 +4,7 @@
 
 // ------------------------------------------------------------------ constants
 // Keep equal to <meta name="app-version"> and the ?v= in index.html; bump all three on each release.
-const APP_VERSION = "2026.09.29-3";
+const APP_VERSION = "2026.09.30-2";
 const API = "https://api.scryfall.com";
 const BATCH = 75;              // max identifiers per /cards/collection request
 const DELAY = 100;             // ms between API requests (Scryfall asks for 50–100 ms)
@@ -850,7 +850,7 @@ function tileHTML(e, isList) {
     ? `<button data-act="minus" title="One less">−</button><button data-act="plus" title="One more">+</button>`
     : "";   // collection: set aside from the card details, right-click menu or A
   return `<figure class="tile${selected.has(e.uid) ? " sel" : ""}" data-uid="${esc(e.uid)}">
-    <div class="art">${art}${e.qty > 1 ? `<span class="badge">×${e.qty}${isList && e.owned > e.qty ? "/" + e.owned : ""}</span>` : ""}${e.finish !== "normal" ? `<span class="foil">${e.finish.toUpperCase()}</span>` : ""}</div>
+    <div class="art">${art}${e.qty > 1 ? (q => `<span class="badge${q.length > 2 ? " l" + Math.min(q.length, 5) : ""}" role="img" aria-label="${e.qty} copies${isList && e.owned > e.qty ? ` of ${e.owned} owned` : ""}"><b>${q}</b></span>`)(`${e.qty}${isList && e.owned > e.qty ? "/" + e.owned : ""}`) : ""}${e.finish !== "normal" ? `<span class="foil">${e.finish.toUpperCase()}</span>` : ""}</div>
     <figcaption class="cap"><div class="meta"><div class="nm" title="${esc(name)}">${esc(name)}</div>
       <div class="sub"><span>${esc(e.set.toUpperCase())} #${esc(e.cn)}</span><span>${fmtPrice(p, cur)}</span></div></div>${btns}</figcaption></figure>`;
 }
