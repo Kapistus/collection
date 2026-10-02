@@ -14,6 +14,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
    Then the page looks at two generous areas (the dashed boxes), finds the text lines inside them (rows with many light/dark changes), and reads each line as a tight strip with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
    - the **name** area: the lines are tried from the top until one reads as a name,
    - the **set · number** area: the bottom-most one or two lines, with the collector number, set code and language (printed on cards since about 2014).
+   Before reading, each strip is cleaned up by comparing every pixel with its own surroundings, so glare, shadows, dim light and colour casts don't wash the letters out; if that reads poorly, the strip is tried again with a plain contrast stretch.
    The areas are big enough to contain the text whether the outline is on the card's outer edge or on its coloured frame. Mana symbols and the set symbol are pictures, not text, so they aren't used.
 3. It identifies the card on Scryfall:
    - set code and number read → the exact printing (checked against the name);

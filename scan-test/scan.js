@@ -4,7 +4,7 @@
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.02-13";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.02-14";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -220,28 +220,54 @@ const srcEl = () => video;
 function zoneCanvas(z, src = srcEl(), c = cardRectInSource()) {
   return stripCanvas(src, c.x + z.x * c.w, c.y + z.y * c.h, z.w * c.w, z.h * c.h, z.px);
 }
-/** Cut out a strip of the picture, scale it to height dh, and make it dark text on a light background. */
-function stripCanvas(src, sx, sy, sw, sh, dh) {
+/** Box blur of a grayscale image (radius r), via running sums: horizontal then vertical. */
+function boxBlur(src, w, h, r) {
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let s = 0; const row = y * w;
+    for (let x = -r; x <= r; x++) s += src[row + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) { tmp[row + x] = s / (2 * r + 1); s += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)]; }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = -r; y <= r; y++) s += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) { out[y * w + x] = s / (2 * r + 1); s += tmp[Math.min(h - 1, y + r + 1) * w + x] - tmp[Math.max(0, y - r) * w + x]; }
+  }
+  return out;
+}
+/** Cut out a strip of the picture, scale it to height dh, and make it dark text on a light background.
+    "local" (default) compares every pixel with its own surroundings, so glare, shadows and dim light across the strip
+    don't wash the letters out; "global" stretches the contrast of the whole strip at once (used as a second try). */
+function stripCanvas(src, sx, sy, sw, sh, dh, how = "local") {
   const dw = Math.max(8, Math.round(dh * sw / sh)), pad = 14;
   const cv = document.createElement("canvas"); cv.width = dw + 2 * pad; cv.height = dh + 2 * pad;
   const g = cv.getContext("2d", { willReadFrequently: true });
   g.imageSmoothingQuality = "high";
   g.drawImage(src, sx, sy, sw, sh, pad, pad, dw, dh);
-  const im = g.getImageData(pad, pad, dw, dh), d = im.data, n = dw * dh, gray = new Uint8ClampedArray(n), hist = new Uint32Array(256);
-  for (let i = 0; i < n; i++) { const v = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000; gray[i] = v; hist[gray[i]]++; }
-  const pct = p => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * p) return v; } return 255; };
-  const lo = pct(0.03), hi = pct(0.97), med = pct(0.5), span = Math.max(hi - lo, 1), invert = med < (lo + hi) / 2;
-  for (let i = 0; i < n; i++) {
-    let v = (gray[i] - lo) * 255 / span; v = v < 0 ? 0 : v > 255 ? 255 : v; if (invert) v = 255 - v;
-    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+  const im = g.getImageData(pad, pad, dw, dh), d = im.data, n = dw * dh, gray = new Float32Array(n);
+  for (let i = 0; i < n; i++) gray[i] = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000;
+  const pctOf = (arr, ps) => { const s = Float32Array.from(arr).sort(); return ps.map(p => s[Math.min(s.length - 1, Math.floor(p * s.length))]); };
+  let out;
+  if (how === "local") {
+    const sm = boxBlur(gray, dw, dh, 1);                                       // a little smoothing against sensor noise
+    const bgr = boxBlur(sm, dw, dh, Math.max(4, Math.round(Math.min(dh, 70) * 0.45)));   // the local background
+    const hp = new Float32Array(n); for (let i = 0; i < n; i++) hp[i] = sm[i] - bgr[i];
+    const [lo, hi] = pctOf(hp, [0.02, 0.98]);
+    const t = new Float32Array(n), dark = -lo >= hi;                           // the text is the stronger tail: darker or lighter than its surroundings
+    for (let i = 0; i < n; i++) t[i] = dark ? -hp[i] : hp[i];
+    const [nf, top] = pctOf(t, [0.6, 0.985]), span = Math.max(top - nf, 4);
+    out = new Float32Array(n); for (let i = 0; i < n; i++) out[i] = 255 - Math.min(1, Math.max(0, (t[i] - nf) / span)) * 255;
+  } else {
+    const [lo, hi, med] = pctOf(gray, [0.03, 0.97, 0.5]), span = Math.max(hi - lo, 1), invert = med < (lo + hi) / 2;
+    out = new Float32Array(n); for (let i = 0; i < n; i++) { let v = (gray[i] - lo) * 255 / span; v = v < 0 ? 0 : v > 255 ? 255 : v; out[i] = invert ? 255 - v : v; }
   }
-  // erase solid horizontal bars (frame edges caught at the zone's top or bottom): rows that are mostly dark
+  for (let i = 0; i < n; i++) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = out[i]; d[i * 4 + 3] = 255; }
+  // erase solid horizontal bars (frame edges caught at the strip's top or bottom): rows that are mostly dark
   for (let y = 0; y < dh; y++) {
-    let dark = 0; for (let x = 0; x < dw; x++) if (d[(y * dw + x) * 4] < 110) dark++;
-    if (dark > dw * 0.55) for (let x = 0; x < dw; x++) { const k = (y * dw + x) * 4; d[k] = d[k + 1] = d[k + 2] = 255; }
+    let dk = 0; for (let x = 0; x < dw; x++) if (d[(y * dw + x) * 4] < 110) dk++;
+    if (dk > dw * 0.55) for (let x = 0; x < dw; x++) { const k = (y * dw + x) * 4; d[k] = d[k + 1] = d[k + 2] = 255; }
   }
-  const bg = invert ? 255 - Math.min(255, Math.max(0, (med - lo) * 255 / span)) : Math.min(255, Math.max(0, (med - lo) * 255 / span));
-  g.fillStyle = `rgb(${bg},${bg},${bg})`; g.fillRect(0, 0, cv.width, cv.height);
+  g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height);
   g.putImageData(im, pad, pad);
   return cv;
 }
@@ -372,12 +398,16 @@ async function readName(w, snap) {
   const cardH = Math.min(snap.rect.h, snap.alt ? snap.alt.h : Infinity);
   const bands = textBands(snap.cv, r).filter(b => { const h = (b.y1 - b.y0) * r.h / cardH; return h > 0.012 && h < 0.07; }).slice(0, 3);
   const tries = [];
-  for (const b of bands) {
-    const bh = (b.y1 - b.y0) * r.h, y = r.y + b.y0 * r.h - bh * 0.35;
-    const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * 1.7, 64);
-    const out = await w.name.recognize(cv), names = nameLines(out.data.text);
-    tries.push({ cv, data: out.data, names });
-    if (names.length && out.data.confidence >= 55) break;
+  const good = t => t.names.length && t.data.confidence >= 55;
+  for (const how of ["local", "global"]) {           // second pass with the other contrast correction, only if needed
+    for (const b of bands) {
+      const bh = (b.y1 - b.y0) * r.h, y = r.y + b.y0 * r.h - bh * 0.35;
+      const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * 1.7, 64, how);
+      const out = await w.name.recognize(cv), names = nameLines(out.data.text);
+      tries.push({ cv, data: out.data, names });
+      if (good(tries[tries.length - 1])) break;
+    }
+    if (tries.some(good)) break;
   }
   if (!tries.length) {                              // no lines found: read the whole area
     const cv = zoneCanvas(ZONES.name, snap.cv, box), out = await w.name.recognize(cv);
@@ -398,13 +428,16 @@ async function readSet(w, snap, codes) {
     if (prev && b.y0 - prev.y1 < bh * 2.5) cands.push({ y0: prev.y0, y1: b.y1, lines: 2 });   // two lines together
     cands.push({ y0: b.y0, y1: b.y1, lines: 1 });
   }
-  const tries = [];
-  for (const c of cands.slice(0, 3)) {
-    const bh = (c.y1 - c.y0) * r.h, y = r.y + c.y0 * r.h - bh * 0.25 / c.lines;
-    const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * (1 + 0.5 / c.lines), c.lines === 2 ? 120 : 60);
-    const out = await w.set.recognize(cv), info = parseSetLine(out.data.text, codes);
-    tries.push({ cv, data: out.data, info });
-    if (info.num && info.sets.length) break;
+  const tries = [], full = t => t.info.num && t.info.sets.length;
+  for (const how of ["local", "global"]) {
+    for (const c of cands.slice(0, 3)) {
+      const bh = (c.y1 - c.y0) * r.h, y = r.y + c.y0 * r.h - bh * 0.25 / c.lines;
+      const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * (1 + 0.5 / c.lines), c.lines === 2 ? 120 : 60, how);
+      const out = await w.set.recognize(cv), info = parseSetLine(out.data.text, codes);
+      tries.push({ cv, data: out.data, info });
+      if (full(tries[tries.length - 1])) break;
+    }
+    if (tries.some(t => t.info.sets.length)) break;     // a set code is enough to narrow the printings down
   }
   if (!tries.length) { const cv = zoneCanvas(ZONES.set, snap.cv, box), out = await w.set.recognize(cv); tries.push({ cv, data: out.data, info: parseSetLine(out.data.text, codes) }); }
   const score = t => (t.info.num ? 1 : 0) + (t.info.sets.length ? 2 : 0);
