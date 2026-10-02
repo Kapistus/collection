@@ -36,6 +36,18 @@ def fetch(url, dest=None):
     time.sleep(0.1)  # Scryfall: 50-100 ms between requests
 
 
+def download_link(item):
+    """The file address in a bulk-data entry: "download_uri", or any other field holding a download address."""
+    if not isinstance(item, dict):
+        return ""
+    if isinstance(item.get("download_uri"), str) and item["download_uri"].startswith("http"):
+        return item["download_uri"]
+    for k, v in item.items():
+        if "download" in k.lower() and isinstance(v, str) and v.startswith("http"):
+            return v
+    return ""
+
+
 def bulk_entry(kind="default_cards"):
     """Find the current download for one bulk file in Scryfall's list of bulk files (GET /bulk-data)."""
     raw = fetch(API + "/bulk-data")
@@ -44,10 +56,24 @@ def bulk_entry(kind="default_cards"):
     except ValueError:
         sys.exit(f"Scryfall's bulk-data list isn't JSON. It starts with: {raw[:300]!r}")
     items = d.get("data", []) if isinstance(d, dict) else d
-    for it in items if isinstance(items, list) else []:
-        if isinstance(it, dict) and it.get("type") == kind and it.get("download_uri"):
-            return it
-    sys.exit(f"No '{kind}' download in Scryfall's bulk-data list. It starts with: {raw[:400]!r}")
+    items = [it for it in (items if isinstance(items, list) else []) if isinstance(it, dict)]
+    want = kind.replace("_", " ").lower()
+    entry = next((it for it in items if it.get("type") == kind), None) or \
+            next((it for it in items if str(it.get("name", "")).lower() == want), None)
+    if not entry:
+        sys.exit(f"No '{kind}' entry in Scryfall's bulk-data list. Entries: {[(it.get('type'), it.get('name')) for it in items]}")
+    link = download_link(entry)
+    if not link and isinstance(entry.get("uri"), str):   # the entry's own page may have the address
+        try:
+            entry = {**entry, **json.loads(fetch(entry["uri"]))}
+            link = download_link(entry)
+        except Exception as e:
+            print(f"Couldn't read {entry['uri']}: {e}", flush=True)
+    if not link:
+        sys.exit(f"The '{kind}' entry has no download address. Its fields: " +
+                 json.dumps({k: (v if len(str(v)) < 120 else str(v)[:120] + "…") for k, v in entry.items()}))
+    entry["download_uri"] = link
+    return entry
 
 
 def open_json(path):
