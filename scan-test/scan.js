@@ -6,9 +6,12 @@
 const $ = s => document.querySelector(s);
 const CARD_RATIO = 63 / 88;                       // width / height of a Magic card
 // areas read, as fractions of the card (x, y, width, height)
+/* Read areas, as fractions of the "read box": the found card plus room for the other interpretation of the outline
+   (outer edge vs coloured frame), so the name bar and the set line are inside them either way. Each area holds a few
+   lines of text; the reader picks the lines out. */
 const ZONES = {
-  name: { x: 0.065, y: 0.040, w: 0.74, h: 0.066, label: "name", px: 90 },
-  set:  { x: 0.035, y: 0.912, w: 0.48, h: 0.070, label: "set · number", px: 130 },
+  name: { x: 0.03, y: 0.005, w: 0.80, h: 0.135, label: "name", px: 160 },
+  set:  { x: 0.02, y: 0.830, w: 0.62, h: 0.170, label: "set · number", px: 300 },
 };
 const LANGS = ["EN", "DE", "FR", "IT", "ES", "PT", "JA", "KO", "RU", "ZHS", "ZHT", "PH"];
 const API = "https://api.scryfall.com";
@@ -194,7 +197,8 @@ function drawOverlay() {
   const found = source === "photoCard" || !!cardRect;
   const W = stage.clientWidth, H = stage.clientHeight, o = source === "photoCard" ? outlineRect() : cardRect ? toStage(cardRect) : outlineRect(), r = o.w * 0.045;
   const rr = (x, y, w, h, r) => `M${x + r},${y}h${w - 2 * r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${w - 2 * r}a${r},${r} 0 0 1 -${r},-${r}v-${h - 2 * r}a${r},${r} 0 0 1 ${r},-${r}z`;
-  const zone = z => { const x = o.x + z.x * o.w, y = o.y + z.y * o.h, w = z.w * o.w, h = z.h * o.h;
+  const bx = source !== "photoCard" && cardRect && cardAlt ? toStage(readBox(cardRect, cardAlt)) : o;
+  const zone = z => { const x = bx.x + z.x * bx.w, y = bx.y + z.y * bx.h, w = z.w * bx.w, h = z.h * bx.h;
     return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="5 4" opacity=".9"/>
       <text x="${z === ZONES.name ? x + 3 : x + w + 6}" y="${z === ZONES.name ? y + h + 13 : y + h / 2 + 4}" fill="#fff" font-size="12" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${z.label}</text>`; };
   const label = (t, y) => `<text x="${W / 2}" y="${y}" text-anchor="middle" fill="#fff" font-size="14" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${t}</text>`;
@@ -211,8 +215,11 @@ new ResizeObserver(drawOverlay).observe(stage);
 const srcEl = () => source === "video" ? video : still;
 /** Cut a zone out of the card, scaled so the text is a good size for the reader, as dark text on a light background. */
 function zoneCanvas(z, src = srcEl(), c = cardRectInSource()) {
-  const sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
-  const dh = z.px, dw = Math.round(dh * sw / sh), pad = 14;
+  return stripCanvas(src, c.x + z.x * c.w, c.y + z.y * c.h, z.w * c.w, z.h * c.h, z.px);
+}
+/** Cut out a strip of the picture, scale it to height dh, and make it dark text on a light background. */
+function stripCanvas(src, sx, sy, sw, sh, dh) {
+  const dw = Math.max(8, Math.round(dh * sw / sh)), pad = 14;
   const cv = document.createElement("canvas"); cv.width = dw + 2 * pad; cv.height = dh + 2 * pad;
   const g = cv.getContext("2d", { willReadFrequently: true });
   g.imageSmoothingQuality = "high";
@@ -254,6 +261,10 @@ function cleanName(t) {
   while (words.length && words[0].length < 2 && !/^[AI]$/.test(words[0])) words.shift();        // junk from the frame
   while (words.length && words[words.length - 1].length < 2) words.pop();                        // junk from the mana cost
   return words.join(" ");
+}
+/** Name candidates from the name area, top line first (the area may also catch a bit of the art below the name bar). */
+function nameLines(t) {
+  return t.split(/\r?\n/).map(cleanName).filter(l => (l.match(/[A-Za-zÀ-ÿ]/g) || []).length >= 3).slice(0, 3);
 }
 const CONFUSE = { "0": "O", "O": "0", "1": "I", "I": "1", "5": "S", "S": "5", "8": "B", "B": "8", "2": "Z", "Z": "2" };
 function setVariants(tok) {
@@ -301,34 +312,110 @@ async function printsOf(card) {
   return d?.data?.length ? d.data : [card];
 }
 const stripZeros = cn => String(cn).replace(/^0+(?=\d)/, "");
-async function identify(name, info) {
+async function identify(names, info) {
+  const best = c => Math.max(0, ...names.flatMap(n => namesOf(c).map(x => similarity(n, x))));
   // 1. set code + collector number = exact printing (checked against the name, when one was read)
   if (info.num && info.sets.length) {
     for (const code of info.sets) {
       const path = `/cards/${code.toLowerCase()}/${info.num}` + (info.lang && info.lang !== "en" ? "/" + info.lang : "");
       const c = await sf(path);
-      if (c && (!name || Math.max(...namesOf(c).map(x => similarity(name, x))) >= 0.55)) return { card: c, how: "set+number" };
+      if (c && (!names.length || best(c) >= 0.55)) return { card: c, how: "set+number", nameUsed: names[0] };
     }
   }
-  // 2. the name, then narrow the printings down with whatever else was read
-  if (name.length >= 3) {
+  // 2. the name (each candidate line, top first), then narrow the printings down with whatever else was read
+  for (const name of names) {
+    if (name.length < 3) continue;
     const named = await fuzzy(name);
-    if (named) {
-      const prints = await printsOf(named);
-      const bySet = info.sets.length ? prints.filter(p => info.sets.includes(p.set.toUpperCase())) : [];
-      const pool = bySet.length ? bySet : prints;
-      const byNum = info.num ? pool.filter(p => stripZeros(p.collector_number) === info.num) : [];
-      if (byNum.length === 1) return { card: byNum[0], how: bySet.length ? "name+set+number" : "name+number" };
-      if (bySet.length === 1) return { card: bySet[0], how: "name+set" };
-      if (prints.length === 1) return { card: prints[0], how: "name (one printing)" };
-      return { card: null, how: "choose", named, prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)) };
-    }
+    if (!named) continue;
+    const prints = await printsOf(named);
+    const bySet = info.sets.length ? prints.filter(p => info.sets.includes(p.set.toUpperCase())) : [];
+    const pool = bySet.length ? bySet : prints;
+    const byNum = info.num ? pool.filter(p => stripZeros(p.collector_number) === info.num) : [];
+    if (byNum.length === 1) return { card: byNum[0], how: bySet.length ? "name+set+number" : "name+number", nameUsed: name };
+    if (bySet.length === 1) return { card: bySet[0], how: "name+set", nameUsed: name };
+    if (prints.length === 1) return { card: prints[0], how: "name (one printing)", nameUsed: name };
+    return { card: null, how: "choose", named, prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)), nameUsed: name };
   }
   return { card: null, how: "fail" };
 }
 
+// ------------------------------------------------------------------ finding text lines in an area
+/** Horizontal bands of text in an area: rows with many light/dark changes along them (letters), between calmer rows.
+    Returns bands as fractions of the area height, top to bottom. */
+function textBands(src, r) {
+  const W = 360, H = Math.max(12, Math.round(W * r.h / r.w));
+  const cv = textBands.cv || (textBands.cv = document.createElement("canvas")); cv.width = W; cv.height = H;
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingQuality = "high";
+  g.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, E = new Float32Array(H), x0 = Math.round(W * 0.03), x1 = Math.round(W * 0.97);
+  for (let y = 0; y < H; y++) {
+    let e = 0, prev = -1;
+    for (let x = x0; x < x1; x++) { const i = (y * W + x) * 4, v = (d[i] + d[i + 1] + d[i + 2]) / 3; if (prev >= 0) e += Math.abs(v - prev); prev = v; }
+    E[y] = e / (x1 - x0);
+  }
+  const S = E.map((_, y) => (E[Math.max(0, y - 1)] + E[y] + E[Math.min(H - 1, y + 1)]) / 3);
+  const sorted = [...S].sort((a, b) => a - b), lo = sorted[Math.floor(H * 0.2)], hi = sorted[H - 1];
+  const T = lo + 0.3 * (hi - lo), bands = [];
+  for (let y = 0; y < H; y++) {
+    if (S[y] <= T) continue;
+    const last = bands[bands.length - 1];
+    if (last && y - last[1] <= 2) last[1] = y; else bands.push([y, y]);
+  }
+  return bands.filter(b => b[1] - b[0] >= 2).map(([a, b]) => ({ y0: a / H, y1: (b + 1) / H }));
+}
+/** Read the name: try the text lines in the name area from the top, keep the first that reads as a name. */
+async function readName(w, snap) {
+  const box = snap.box, z = ZONES.name, r = { x: box.x + z.x * box.w, y: box.y + z.y * box.h, w: z.w * box.w, h: z.h * box.h };
+  const cardH = Math.min(snap.rect.h, snap.alt ? snap.alt.h : Infinity);
+  const bands = textBands(snap.cv, r).filter(b => { const h = (b.y1 - b.y0) * r.h / cardH; return h > 0.012 && h < 0.07; }).slice(0, 3);
+  const tries = [];
+  for (const b of bands) {
+    const bh = (b.y1 - b.y0) * r.h, y = r.y + b.y0 * r.h - bh * 0.35;
+    const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * 1.7, 64);
+    const out = await w.name.recognize(cv), names = nameLines(out.data.text);
+    tries.push({ cv, data: out.data, names });
+    if (names.length && out.data.confidence >= 55) break;
+  }
+  if (!tries.length) {                              // no lines found: read the whole area
+    const cv = zoneCanvas(ZONES.name, snap.cv, box), out = await w.name.recognize(cv);
+    tries.push({ cv, data: out.data, names: nameLines(out.data.text) });
+  }
+  const pick = tries.find(t => t.names.length && t.data.confidence >= 55) || tries.filter(t => t.names.length).sort((a, b) => b.data.confidence - a.data.confidence)[0] || tries[0];
+  const names = [...new Set([...pick.names, ...tries.flatMap(t => t.names)])].slice(0, 3);
+  return { names, cv: pick.cv, data: pick.data };
+}
+/** Read the set line: the bottom-most text lines in the set area (the number line and the set line are close together). */
+async function readSet(w, snap, codes) {
+  const box = snap.box, z = ZONES.set, r = { x: box.x + z.x * box.w, y: box.y + z.y * box.h, w: z.w * box.w, h: z.h * box.h };
+  const cardH = Math.min(snap.rect.h, snap.alt ? snap.alt.h : Infinity);
+  const bands = textBands(snap.cv, r).filter(b => { const h = (b.y1 - b.y0) * r.h / cardH; return h > 0.006 && h < 0.05; });
+  const cands = [];
+  for (let i = bands.length - 1; i >= 0 && cands.length < 3; i--) {
+    const b = bands[i], prev = bands[i - 1], bh = b.y1 - b.y0;
+    if (prev && b.y0 - prev.y1 < bh * 2.5) cands.push({ y0: prev.y0, y1: b.y1, lines: 2 });   // two lines together
+    cands.push({ y0: b.y0, y1: b.y1, lines: 1 });
+  }
+  const tries = [];
+  for (const c of cands.slice(0, 3)) {
+    const bh = (c.y1 - c.y0) * r.h, y = r.y + c.y0 * r.h - bh * 0.25 / c.lines;
+    const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * (1 + 0.5 / c.lines), c.lines === 2 ? 120 : 60);
+    const out = await w.set.recognize(cv), info = parseSetLine(out.data.text, codes);
+    tries.push({ cv, data: out.data, info });
+    if (info.num && info.sets.length) break;
+  }
+  if (!tries.length) { const cv = zoneCanvas(ZONES.set, snap.cv, box), out = await w.set.recognize(cv); tries.push({ cv, data: out.data, info: parseSetLine(out.data.text, codes) }); }
+  const score = t => (t.info.num ? 1 : 0) + (t.info.sets.length ? 2 : 0);
+  return tries.sort((a, b) => score(b) - score(a))[0];
+}
+
 // ------------------------------------------------------------------ one scan
 /** Copy of the card area of the current frame, so reading isn't affected by the picture changing. */
+/** The box the read areas are placed in: the found card united with its other interpretation. */
+function readBox(r, a) {
+  if (!a) return r;
+  const x0 = Math.min(r.x, a.x), y0 = Math.min(r.y, a.y);
+  return { x: x0, y: y0, w: Math.max(r.x + r.w, a.x + a.w) - x0, h: Math.max(r.y + r.h, a.y + a.h) - y0 };
+}
 function snapshotCard() {
   const [sw, sh] = srcSize(), r = cardRectInSource(), a = source !== "photoCard" && cardRect && cardAlt ? cardAlt : null;
   const ux0 = Math.min(r.x, a ? a.x : r.x), uy0 = Math.min(r.y, a ? a.y : r.y);
@@ -338,13 +425,13 @@ function snapshotCard() {
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   cv.getContext("2d").drawImage(srcEl(), x, y, w, h, 0, 0, w, h);
   const rel = q => ({ x: q.x - x, y: q.y - y, w: q.w, h: q.h });
-  return { cv, rect: rel(r), alt: a ? rel(a) : null, frame: cardIsFrame };
+  return { cv, rect: rel(r), alt: a ? rel(a) : null, box: rel(readBox(r, a)), frame: cardIsFrame };
 }
 /** Sharpness of the two read areas: variance of the Laplacian (higher = sharper edges). */
 function sharpness(snap) {
   let total = 0;
   for (const z of [ZONES.name, ZONES.set]) {
-    const c = snap.rect, sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
+    const c = snap.box, sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
     const H = 48, W = Math.max(8, Math.round(H * sw / sh));
     const cv = sharpness.cv || (sharpness.cv = document.createElement("canvas")); cv.width = W; cv.height = H;
     const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(snap.cv, sx, sy, sw, sh, 0, 0, W, H);
@@ -388,31 +475,20 @@ async function scan(trigger = "auto") {
     if (useMode === 2) status("Picking the sharpest frame…");
     const snap = useMode === 2 ? await sharpestSnapshot() : Object.assign(snapshotCard(), {});
     snap.sharp ??= sharpness(snap);
-    const cn = zoneCanvas(ZONES.name, snap.cv, snap.rect), cs = zoneCanvas(ZONES.set, snap.cv, snap.rect);   // read areas on the card
     if (!workers) status("Waiting for the text reader to load…");
     const w = await getWorkers();
     status("Reading…");
-    let [rn, rs, codes] = await Promise.all([w.name.recognize(cn), w.set.recognize(cs), loadSets()]);
-    let name = cleanName(rn.data.text), info = parseSetLine(rs.data.text, codes), crops = [cn, cs], used = snap.frame ? "frame + border" : "outer edge";
+    const codes = await loadSets();
+    const [nm, st] = await Promise.all([readName(w, snap), readSet(w, snap, codes)]);
+    const names = nm.names, name = names[0] || "", info = st.info, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
+    const used = snap.frame ? "frame + border" : "outer edge";
     let res = null;
-    if (name || info.num) { status("Looking up on Scryfall…"); res = await identify(name, info); }
-    const rank = r => !r ? -1 : r.card ? 2 : r.how === "choose" ? 1 : 0;
-    if (rank(res) < 2 && snap.alt) {
-      // try the other reading of the outline: the card's outer edge vs its coloured frame
-      const cn2 = zoneCanvas(ZONES.name, snap.cv, snap.alt), cs2 = zoneCanvas(ZONES.set, snap.cv, snap.alt);
-      const [rn2, rs2] = await Promise.all([w.name.recognize(cn2), w.set.recognize(cs2)]);
-      const name2 = cleanName(rn2.data.text), info2 = parseSetLine(rs2.data.text, codes);
-      const res2 = name2 || info2.num ? await identify(name2, info2) : null;
-      if (rank(res2) > rank(res)) {
-        [rn, rs, name, info, res, crops] = [rn2, rs2, name2, info2, res2, [cn2, cs2]];
-        used = snap.frame ? "outer edge (second try)" : "frame + border (second try)";
-      }
-    }
+    if (names.length || info.num) { status("Looking up on Scryfall…"); res = await identify(names, info); }
     const t1 = performance.now();
     if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
     res ||= { card: null, how: "fail" };
     const t2 = performance.now();
-    current = { name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used };
+    current = { name: res?.nameUsed || name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used };
     if (res.card) addLog(res.card, res.how, t2 - t0);
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
@@ -602,7 +678,7 @@ $("#camDetails").onclick = () => {
 
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
 const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
-const STILL = 8;                                  // average brightness change per pixel (0–255) that still counts as "not moving"
+const STILL = 12;                                 // average brightness change per pixel (0–255) that still counts as "not moving"
 let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0;
 setInterval(() => {
   if (source !== "video" || !video.videoWidth) return;
