@@ -36,6 +36,20 @@ def fetch(url, dest=None):
     time.sleep(0.1)  # Scryfall: 50-100 ms between requests
 
 
+def bulk_entry(kind="default_cards"):
+    """Find the current download for one bulk file in Scryfall's list of bulk files (GET /bulk-data)."""
+    raw = fetch(API + "/bulk-data")
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        sys.exit(f"Scryfall's bulk-data list isn't JSON. It starts with: {raw[:300]!r}")
+    items = d.get("data", []) if isinstance(d, dict) else d
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, dict) and it.get("type") == kind and it.get("download_uri"):
+            return it
+    sys.exit(f"No '{kind}' download in Scryfall's bulk-data list. It starts with: {raw[:400]!r}")
+
+
 def open_json(path):
     """Open a JSON file that may be gzip-compressed."""
     with open(path, "rb") as f:
@@ -59,18 +73,21 @@ def clean(s):
 
 
 def main():
+    global API
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"))
     ap.add_argument("--input", help="saved Default Cards JSON (skip the download)")
     ap.add_argument("--sets-input", help="saved /sets JSON (skip the download)")
+    ap.add_argument("--api", default=API, help=argparse.SUPPRESS)   # for testing against a local copy
     a = ap.parse_args()
+    API = a.api.rstrip("/")
     os.makedirs(a.out, exist_ok=True)
 
     tmp = None
     if a.input:
         cards_path, source_updated = a.input, "local file"
     else:
-        meta = json.loads(fetch(API + "/bulk-data/default-cards"))
+        meta = bulk_entry("default_cards")
         source_updated = meta.get("updated_at", "")
         tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
         print(f"Downloading {meta['download_uri']} ({meta.get('size', 0) / 1e6:.0f} MB)…", flush=True)
