@@ -7,7 +7,11 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 1. The page looks for the card in every camera frame (about 5 times a second) and draws a white outline around it, so you can hold the card anywhere and at any distance. A dashed outline means no card is found yet. If the card is too small in the picture to read, it says **Move the card closer**.
    - Finding the card: the picture is shrunk to 320 px wide, edges are found, and the rectangle with a card's proportions whose four sides are covered by straight, consistent edges wins. It works for a card held roughly upright (up to about 5° tilt).
    - A black-bordered card on a dark table may be outlined at its inner frame instead of its outer edge.
-2. When the card has been found and still for about half a second, the page cuts out two areas and reads them with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
+2. **Mode** (remembered) decides which frame is read once the card has been found and still for about half a second:
+   - **1: first still frame** reads that frame right away. Fastest.
+   - **2: sharpest of 6 frames** looks at about 6 frames over 0.7 s and reads the sharpest (measured on the name and set areas). Helps when autofocus is still settling. The log has a Mode column and keeps separate statistics for each mode, so they can be compared.
+
+   Then the page cuts out two areas and reads them with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
    - the **name** bar,
    - the **bottom-left corner**: collector number, set code and language (printed on cards since about 2014).
 3. It identifies the card on Scryfall:
@@ -23,7 +27,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 - The camera only works over HTTPS (GitHub Pages) or on localhost.
 - The text reader loads about 9 MB the first time; the browser keeps the language data afterwards.
-- **Flashlight, focus and zoom** controls appear under the buttons. They work only where the browser and camera allow it: mostly Chrome on Android, and some webcams in desktop Chrome. iPhone Safari and Firefox don't offer them. Unsupported controls are greyed out with a note. **Camera details** shows (and copies) exactly what the camera and browser report, for troubleshooting. On phones with several back cameras, try each one in the camera list: often only the main camera has a flashlight and adjustable focus.
+- **Flashlight, focus and zoom** controls appear under the buttons. They work only where the browser and camera allow it: mostly Chrome on Android, and some webcams in desktop Chrome. iPhone Safari and Firefox don't offer them. Only the controls the camera allows are shown; the note next to **Camera details** lists what isn't available. **Camera details** shows (and copies) exactly what the camera and browser report, for troubleshooting. On phones with several back cameras, try each one in the camera list: often only the main camera has a flashlight and adjustable focus.
   - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
 - Foil can't be seen reliably in a photo.
 

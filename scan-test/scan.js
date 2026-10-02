@@ -190,13 +190,13 @@ new ResizeObserver(drawOverlay).observe(stage);
 // ------------------------------------------------------------------ image processing
 const srcEl = () => source === "video" ? video : still;
 /** Cut a zone out of the card, scaled so the text is a good size for the reader, as dark text on a light background. */
-function zoneCanvas(z) {
-  const c = cardRectInSource(), sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
+function zoneCanvas(z, src = srcEl(), c = cardRectInSource()) {
+  const sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
   const dh = z.px, dw = Math.round(dh * sw / sh), pad = 14;
   const cv = document.createElement("canvas"); cv.width = dw + 2 * pad; cv.height = dh + 2 * pad;
   const g = cv.getContext("2d", { willReadFrequently: true });
   g.imageSmoothingQuality = "high";
-  g.drawImage(srcEl(), sx, sy, sw, sh, pad, pad, dw, dh);
+  g.drawImage(src, sx, sy, sw, sh, pad, pad, dw, dh);
   const im = g.getImageData(pad, pad, dw, dh), d = im.data, n = dw * dh, gray = new Uint8ClampedArray(n), hist = new Uint32Array(256);
   for (let i = 0; i < n; i++) { const v = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000; gray[i] = v; hist[gray[i]]++; }
   const pct = p => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * p) return v; } return 255; };
@@ -308,6 +308,52 @@ async function identify(name, info) {
 }
 
 // ------------------------------------------------------------------ one scan
+/** Copy of the card area of the current frame, so reading isn't affected by the picture changing. */
+function snapshotCard() {
+  const [sw, sh] = srcSize(), r = cardRectInSource();
+  const x = Math.max(0, Math.floor(r.x)), y = Math.max(0, Math.floor(r.y));
+  const w = Math.max(1, Math.min(sw, Math.ceil(r.x + r.w)) - x), h = Math.max(1, Math.min(sh, Math.ceil(r.y + r.h)) - y);
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  cv.getContext("2d").drawImage(srcEl(), x, y, w, h, 0, 0, w, h);
+  return { cv, rect: { x: r.x - x, y: r.y - y, w: r.w, h: r.h } };
+}
+/** Sharpness of the two read areas: variance of the Laplacian (higher = sharper edges). */
+function sharpness(snap) {
+  let total = 0;
+  for (const z of [ZONES.name, ZONES.set]) {
+    const c = snap.rect, sx = c.x + z.x * c.w, sy = c.y + z.y * c.h, sw = z.w * c.w, sh = z.h * c.h;
+    const H = 48, W = Math.max(8, Math.round(H * sw / sh));
+    const cv = sharpness.cv || (sharpness.cv = document.createElement("canvas")); cv.width = W; cv.height = H;
+    const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(snap.cv, sx, sy, sw, sh, 0, 0, W, H);
+    const d = g.getImageData(0, 0, W, H).data, gray = new Float32Array(W * H);
+    for (let i = 0; i < gray.length; i++) gray[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
+    let sum = 0, sum2 = 0, n = 0;
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x, l = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - W] - gray[i + W];
+      sum += l; sum2 += l * l; n++;
+    }
+    total += sum2 / n - (sum / n) ** 2;
+  }
+  return total;
+}
+let mode = (() => { try { return localStorage.getItem("scanMode") === "2" ? 2 : 1; } catch { return 1; } })();
+document.querySelector(`input[name=mode][value="${mode}"]`).checked = true;
+document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => {
+  mode = +r.value; try { localStorage.setItem("scanMode", String(mode)); } catch {}
+});
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+/** Mode 2: look at 6 frames over about 0.7 s and keep the sharpest. */
+async function sharpestSnapshot() {
+  let best = null;
+  for (let i = 0; i < 6; i++) {
+    if (i) { await sleep(120); updateCard(); drawOverlay(); }
+    if (!cardRect) continue;
+    const snap = snapshotCard(); snap.sharp = sharpness(snap);
+    if (!best || snap.sharp > best.sharp) best = snap;
+  }
+  return best || Object.assign(snapshotCard(), { sharp: 0 });
+}
+
 async function scan(trigger = "auto") {
   if (!source) return;
   if (busy) { if (trigger !== "auto") status("Still working on the previous scan…", "warn"); return; }
@@ -315,7 +361,11 @@ async function scan(trigger = "auto") {
   busy = true; $("#capture").disabled = true;
   const t0 = performance.now();
   try {
-    const cn = zoneCanvas(ZONES.name), cs = zoneCanvas(ZONES.set);   // cut the areas first: the picture may change while waiting
+    const useMode = source === "video" ? mode : 1;
+    if (useMode === 2) status("Picking the sharpest frame…");
+    const snap = useMode === 2 ? await sharpestSnapshot() : Object.assign(snapshotCard(), {});
+    snap.sharp ??= sharpness(snap);
+    const cn = zoneCanvas(ZONES.name, snap.cv, snap.rect), cs = zoneCanvas(ZONES.set, snap.cv, snap.rect);
     if (!workers) status("Waiting for the text reader to load…");
     const w = await getWorkers();
     status("Reading…");
@@ -326,7 +376,7 @@ async function scan(trigger = "auto") {
     status("Looking up on Scryfall…");
     const res = await identify(name, info);
     const t2 = performance.now();
-    current = { name, info, res, raw: { name: rn.data, set: rs.data }, crops: [cn, cs], ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null };
+    current = { name, info, res, raw: { name: rn.data, set: rs.data }, crops: [cn, cs], ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp };
     if (res.card) addLog(res.card, res.how, t2 - t0);
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
@@ -351,7 +401,7 @@ function renderResult() {
   $("#result").innerHTML = card
     ? `<div class="result"><img src="${esc(img(card))}" alt=""><div><div class="name">${esc(card.printed_name || card.name)}</div>
         <div>${esc(card.set_name)} · ${esc(card.set.toUpperCase())} #${esc(card.collector_number)}${card.lang !== "en" ? " · " + esc(card.lang.toUpperCase()) : ""}</div>
-        <p>${tag(c.res.how)}</p><p class="hint">Read ${Math.round(c.ms.read)} ms · lookup ${Math.round(c.ms.lookup)} ms</p></div></div>`
+        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · read ${Math.round(c.ms.read)} ms · lookup ${Math.round(c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   if (c.res.prints && !card) {
@@ -376,15 +426,21 @@ $("#picker").addEventListener("click", ev => {
   renderResult(); status(`Chosen: ${card.name} (${card.set.toUpperCase()} #${card.collector_number})`, "ok");
 });
 function addLog(card, how, ms, what = "") {
-  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms });
+  const m = current?.mode || (how === "typed" ? "–" : mode);
+  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m });
   renderLog();
 }
 function renderLog() {
-  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${(l.ms / 1000).toFixed(1)} s</td></tr>`).join("");
-  const count = k => log.filter(l => HOW[l.how][0] === k).length, t = log.length;
-  const pct = n => t ? ` (${Math.round(n * 100 / t)}%)` : "";
-  $("#stats").innerHTML = t ? `<span>${t} scans</span><span>✔ automatic: ${count("exact")}${pct(count("exact"))}</span><span>✋ printing chosen: ${count("name")}${pct(count("name"))}</span><span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span>` +
-    `<span>average ${(log.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span>` : `<span class="hint">Nothing yet.</span>`;
+  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${esc(l.mode)}</td><td>${(l.ms / 1000).toFixed(1)} s</td></tr>`).join("");
+  const line = (rows, label) => {
+    const t = rows.length, count = k => rows.filter(l => HOW[l.how][0] === k).length, pct = n => ` (${Math.round(n * 100 / t)}%)`;
+    return `<div>${label}<span>${t} scans</span> · <span>✔ automatic: ${count("exact")}${pct(count("exact"))}</span> · <span>✋ printing chosen: ${count("name")}${pct(count("name"))}</span> · ` +
+      `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span></div>`;
+  };
+  const m1 = log.filter(l => l.mode === 1), m2 = log.filter(l => l.mode === 2);
+  $("#stats").innerHTML = !log.length ? `<span class="hint">Nothing yet.</span>`
+    : (m1.length && m2.length) ? line(m1, "<b>Mode 1:</b> ") + line(m2, "<b>Mode 2:</b> ") + line(log, "<b>All:</b> ")
+    : line(log, m2.length ? "<b>Mode 2:</b> " : m1.length ? "<b>Mode 1:</b> " : "");
 }
 $("#copyLog").onclick = async () => {
   const text = [...log].reverse().filter(l => l.set).map(l => `1 ${l.name} (${l.set}) ${l.cn}`).join("\n");
@@ -445,7 +501,7 @@ async function startCamera(deviceId) {
 function stopCamera() {
   stream?.getTracks().forEach(t => t.stop()); stream = null;
   if (source === "video") { source = null; video.hidden = true; $("#placeholder").hidden = false; drawOverlay(); }
-  $("#startCam").hidden = false; $("#stopCam").hidden = true; $("#camControls").hidden = true; $("#capture").disabled = !source;
+  $("#startCam").hidden = false; $("#stopCam").hidden = true; $("#camControls").hidden = true; $("#detailsRow").hidden = true; $("#camDump").hidden = true; $("#capture").disabled = !source;
 }
 $("#startCam").onclick = () => startCamera();
 $("#stopCam").onclick = () => { stopCamera(); status(""); };
@@ -459,24 +515,25 @@ async function setTrack(c) {
 let ctlTouched = false;
 function setupCamControls(track) {
   const caps = track.getCapabilities?.() || {}, set = track.getSettings?.() || {}, missing = [];
-  $("#camControls").hidden = false;
+  $("#detailsRow").hidden = false;
   // flashlight
-  const torch = $("#torch"); torch.disabled = !caps.torch; torch.dataset.on = ""; torch.textContent = "Flashlight";
+  const torch = $("#torch"); torch.hidden = !caps.torch; torch.dataset.on = ""; torch.textContent = "Flashlight";
   if (!caps.torch) missing.push("flashlight");
   // focus
   const fd = caps.focusDistance, canFocus = !!(fd && fd.max > fd.min && (caps.focusMode || []).includes("manual"));
   const f = $("#focus"), af = $("#autoFocus");
-  af.disabled = !canFocus; af.checked = true; f.disabled = true;
+  $("#focusBox").hidden = !canFocus; af.checked = true; f.disabled = true;
   if (canFocus) {
     f.min = fd.min; f.max = fd.max; f.step = fd.step || (fd.max - fd.min) / 100;
     f.value = set.focusDistance ?? (fd.min + fd.max) / 2; showFocus();
   } else { $("#focusVal").textContent = ""; missing.push("focus"); }
   // zoom
   const z = caps.zoom, zr = $("#zoom"), canZoom = !!(z && z.max > z.min);
-  zr.disabled = !canZoom;
+  $("#zoomBox").hidden = !canZoom;
   if (canZoom) { zr.min = z.min; zr.max = z.max; zr.step = z.step || 0.1; zr.value = set.zoom ?? z.min; $("#zoomVal").textContent = `${(+zr.value).toFixed(1)}×`; }
   else { $("#zoomVal").textContent = ""; missing.push("zoom"); }
-  $("#ctlNote").textContent = missing.length ? `Not adjustable with this camera and browser: ${missing.join(", ")}.` : "";
+  $("#camControls").hidden = missing.length === 3;   // show only what this camera allows
+  $("#ctlNote").textContent = missing.length ? `Not available on this camera and browser: ${missing.join(", ")}.` : "";
 }
 function showFocus() { const v = +$("#focus").value; $("#focusVal").textContent = v >= 1 ? `${v.toFixed(2)} m` : `${Math.round(v * 100)} cm`; }
 $("#torch").onclick = async () => { ctlTouched = true;

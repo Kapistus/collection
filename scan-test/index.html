@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.02-5">
+<meta name="app-version" content="scan-test 2026.10.02-6">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -16,7 +16,7 @@ header h1 { font-size: 18px; margin: 0; }
 header span { color: var(--muted); font-size: 13px; }
 main { max-width: 1200px; margin: 0 auto; padding: 12px 16px 40px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
-.camctl .ctl { display: inline-flex; gap: 6px; align-items: center; }
+.ctl { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .camctl input[type=range] { width: 140px; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
 button, select, input[type=text] { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
@@ -69,14 +69,17 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <button id="photoBtn">Test with a photo…</button>
       <input type="file" id="photo" accept="image/*" hidden>
     </div>
+    <div class="controls">
+      <span class="ctl mode" role="radiogroup" aria-label="Capture mode"><b>Mode</b>
+        <label class="check" title="Read the first frame where the card is still. Fastest."><input type="radio" name="mode" value="1"> 1: first still frame</label>
+        <label class="check" title="Look at about 6 frames over 0.7 s and read the sharpest. Helps when autofocus is still settling."><input type="radio" name="mode" value="2"> 2: sharpest of 6 frames</label>
+      </span>
+    </div>
     <div class="controls camctl" id="camControls" hidden>
-      <button id="torch">Flashlight</button>
-      <span class="ctl"><label class="check"><input type="checkbox" id="autoFocus" checked> Auto focus</label>
+      <button id="torch" hidden>Flashlight</button>
+      <span class="ctl" id="focusBox" hidden><label class="check"><input type="checkbox" id="autoFocus" checked> Auto focus</label>
         <input type="range" id="focus" disabled aria-label="Focus distance"><span id="focusVal" class="hint"></span></span>
-      <span class="ctl" id="zoomBox"><label for="zoom">Zoom</label> <input type="range" id="zoom" aria-label="Zoom"><span id="zoomVal" class="hint"></span></span>
-      <span class="hint" id="ctlNote"></span>
-      <button id="camDetails" class="ghost" title="Show what this camera and browser report">Camera details</button>
-      <pre id="camDump" hidden style="flex-basis:100%;max-height:220px;overflow:auto;font-size:11px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;margin:0"></pre>
+      <span class="ctl" id="zoomBox" hidden><label for="zoom">Zoom</label> <input type="range" id="zoom" aria-label="Zoom"><span id="zoomVal" class="hint"></span></span>
     </div>
     <div class="stage" id="stage">
       <video id="video" playsinline muted hidden></video>
@@ -86,6 +89,8 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
     </div>
     <p class="status" id="status"></p>
     <p class="hint" id="diag"></p>
+    <p class="row" id="detailsRow" hidden><button id="camDetails" title="Show what this camera and browser report">Camera details</button><span class="hint" id="ctlNote"></span></p>
+    <pre id="camDump" hidden style="max-height:220px;overflow:auto;font-size:11px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px"></pre>
     <p class="hint">Hold the card upright in front of the camera, in good light. The white outline follows the card; a dashed outline means no card is found yet. The site reads the two marked areas: the <b>name</b> and the <b>set code and collector number</b> in the bottom-left corner. <span id="camInfo"></span></p>
   </section>
   <section>
@@ -102,12 +107,12 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
     <div class="panel">
       <h2>Scanned in this test</h2>
       <div class="stats" id="stats"></div>
-      <table><thead><tr><th>#</th><th>Card</th><th>Set</th><th>Found by</th><th>Time</th></tr></thead><tbody id="log"></tbody></table>
+      <table><thead><tr><th>#</th><th>Card</th><th>Set</th><th>Found by</th><th>Mode</th><th>Time</th></tr></thead><tbody id="log"></tbody></table>
       <div class="row" style="margin-top:8px"><button id="copyLog">Copy as text</button><button id="clearLog">Clear</button><span class="hint" id="copyMsg"></span></div>
     </div>
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.02-5"></script>
+<script src="scan.js?v=2026.10.02-6"></script>
 </body>
 </html>
