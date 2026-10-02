@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card Scanner Test</title>
+<meta name="app-version" content="scan-test 2026.10.02-1">
+<style>
+:root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; }
+header span { color: var(--muted); font-size: 13px; }
+main { max-width: 1200px; margin: 0 auto; padding: 12px 16px 40px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+button, select, input[type=text] { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+label.check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.stage { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 72vh; background: #000; border-radius: 10px; overflow: hidden; }
+.stage video, .stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.stage .placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #bbb; text-align: center; padding: 20px; }
+.status { margin: 8px 0; font-weight: 600; min-height: 1.45em; }
+.status.ok { color: var(--ok); } .status.warn { color: var(--warn); } .status.bad { color: var(--bad); }
+.hint { color: var(--muted); font-size: 13px; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.panel h2 { font-size: 15px; margin: 0 0 8px; }
+.result { display: grid; grid-template-columns: 120px 1fr; gap: 12px; }
+.result img { width: 120px; border-radius: 6px; }
+.result .name { font-weight: 700; font-size: 16px; }
+.tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 10px; color: #fff; }
+.tag.exact { background: var(--ok); } .tag.name { background: var(--warn); } .tag.fail { background: var(--bad); }
+.crops { display: grid; gap: 6px; margin-top: 10px; }
+.crops canvas { max-width: 100%; border: 1px solid var(--line); background: #fff; }
+.crops code { font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 8px; max-height: 360px; overflow: auto; }
+.picker button { padding: 4px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; text-align: center; }
+.picker button img { width: 100%; border-radius: 4px; }
+.picker button.sug { outline: 3px solid var(--ok); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; margin-bottom: 8px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.manual { display: flex; gap: 6px; margin-top: 8px; }
+.manual input { flex: 1; min-width: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Card Scanner Test</h1>
+  <span>Standalone test. Nothing is saved; card data comes from Scryfall.</span>
+</header>
+<main>
+  <section>
+    <div class="controls">
+      <button id="startCam" class="primary">Start camera</button>
+      <button id="stopCam" hidden>Stop</button>
+      <select id="camSelect" hidden title="Camera"></select>
+      <button id="torch" hidden>Flashlight</button>
+      <label class="check"><input type="checkbox" id="auto" checked> Capture automatically</label>
+      <button id="capture" disabled>Capture now</button>
+      <button id="photoBtn">Test with a photo…</button>
+      <input type="file" id="photo" accept="image/*" hidden>
+    </div>
+    <div class="stage" id="stage">
+      <video id="video" playsinline muted hidden></video>
+      <img id="still" alt="" hidden>
+      <div class="placeholder" id="placeholder">Start the camera, or test with a photo of a card.</div>
+      <svg id="overlay" hidden></svg>
+    </div>
+    <p class="status" id="status"></p>
+    <p class="hint">Line the card up with the white outline, upright, in good light. The site reads the two marked areas: the <b>name</b> and the <b>set code and collector number</b> in the bottom-left corner. <span id="camInfo"></span></p>
+  </section>
+  <section>
+    <div class="panel" id="resultPanel" hidden>
+      <h2>Last scan</h2>
+      <div id="result"></div>
+      <div id="pickerWrap" hidden>
+        <p class="hint" id="pickerHint"></p>
+        <div class="picker" id="picker"></div>
+      </div>
+      <div class="manual"><input type="text" id="manualName" placeholder="Wrong card? Type the name…" list="acList"><datalist id="acList"></datalist><button id="manualGo">Find</button></div>
+      <details class="crops" id="cropsBox"><summary>What was read</summary><div id="crops"></div></details>
+    </div>
+    <div class="panel">
+      <h2>Scanned in this test</h2>
+      <div class="stats" id="stats"></div>
+      <table><thead><tr><th>#</th><th>Card</th><th>Set</th><th>Found by</th><th>Time</th></tr></thead><tbody id="log"></tbody></table>
+      <div class="row" style="margin-top:8px"><button id="copyLog">Copy as text</button><button id="clearLog">Clear</button><span class="hint" id="copyMsg"></span></div>
+    </div>
+  </section>
+</main>
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="scan.js?v=2026.10.02-1"></script>
+</body>
+</html>
