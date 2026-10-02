@@ -24,6 +24,8 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 **While you choose a printing**, automatic scanning pauses, so the list doesn't change under you. Choosing a printing or pressing **Skip** continues; **Capture now** also ends the choice.
 
+**Sound:** a short blip plays when a card is identified (not when you have to choose the printing). Switch it off with **Sound**; the choice is remembered. Browsers only allow sound after a tap, so it starts working once you've pressed **Start camera**.
+
 **Camera:** the page remembers the camera you used last and starts with it next time (matched by its id, or by its name if the browser has changed the id). If it's no longer available, the default back camera is used.
 
 ## Notes

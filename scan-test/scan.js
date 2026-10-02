@@ -4,7 +4,7 @@
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.02-11";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.02-12";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -490,7 +490,7 @@ async function scan(trigger = "auto") {
     res ||= { card: null, how: "fail" };
     const t2 = performance.now();
     current = { name: res?.nameUsed || name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used };
-    if (res.card) addLog(res.card, res.how, t2 - t0);
+    if (res.card) { addLog(res.card, res.how, t2 - t0); blip(); }
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
     status(res.card ? `Found: ${res.card.name}` : res.how === "choose" ? "Name found. Choose the printing you have (scanning is paused until you choose or skip)." : "Not recognised. Try again, or type the name.",
@@ -499,6 +499,24 @@ async function scan(trigger = "auto") {
     console.error(err); status("Error: " + err.message, "bad");
   } finally { busy = false; $("#capture").disabled = !source; }
 }
+
+// ------------------------------------------------------------------ sound
+/* A short blip when a card is identified (Web Audio, no sound file). Browsers only allow sound after a tap,
+   so the audio is unlocked when the camera is started. */
+let audio = null;
+function unlockAudio() { try { audio ||= new (window.AudioContext || window.webkitAudioContext)(); audio.resume?.(); } catch {} }
+function blip() {
+  if (!$("#sound").checked || !audio) return;
+  try {
+    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+    o.type = "sine"; o.frequency.setValueAtTime(1320, t);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.1);
+    window.__blips = (window.__blips || 0) + 1;     // counted for the automated tests
+  } catch {}
+}
+try { $("#sound").checked = localStorage.getItem("scanSound") !== "0"; } catch {}
+$("#sound").onchange = () => { try { localStorage.setItem("scanSound", $("#sound").checked ? "1" : "0"); } catch {} if ($("#sound").checked) { unlockAudio(); blip(); } };
 
 // ------------------------------------------------------------------ results and log
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -635,7 +653,7 @@ function stopCamera() {
   if (source === "video") { source = null; video.hidden = true; $("#placeholder").hidden = false; drawOverlay(); }
   $("#startCam").hidden = false; $("#stopCam").hidden = true; $("#camControls").hidden = true; $("#detailsRow").hidden = true; $("#camDump").hidden = true; $("#capture").disabled = !source;
 }
-$("#startCam").onclick = () => startCamera();
+$("#startCam").onclick = () => { unlockAudio(); startCamera(); };
 $("#stopCam").onclick = () => { stopCamera(); status(""); };
 $("#camSelect").onchange = e => startCamera(e.target.value);
 /* Flashlight, focus and zoom: only what the browser and camera allow (mostly Chrome on Android; some webcams in desktop Chrome).
