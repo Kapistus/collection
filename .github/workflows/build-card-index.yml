@@ -1,0 +1,56 @@
+# Builds the card scanner's local card index from Scryfall's bulk data.
+# Location in the repository: .github/workflows/build-card-index.yml
+# Runs every Monday, and on demand: Actions tab → "Build card index" → Run workflow (e.g. after a new set is released).
+name: Build card index
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"        # Mondays 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write              # commit the index
+  pages: write                 # ask GitHub Pages to rebuild afterwards
+
+concurrency:
+  group: card-index
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the JSON stream reader
+        run: pip install ijson
+
+      - name: Build the index
+        run: python3 scan-test/tools/build_card_index.py --out scan-test/data
+
+      - name: Commit if the cards changed
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scan-test/data
+          if git diff --cached --quiet -- scan-test/data/cards.txt.gz; then
+            echo "Card index unchanged; nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Update card index ($(date -u +%Y-%m-%d))"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebuild GitHub Pages
+        if: steps.commit.outputs.changed == 'true'
+        continue-on-error: true      # Pages usually rebuilds on the push by itself; this makes sure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" || true
