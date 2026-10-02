@@ -419,18 +419,21 @@ async function startCamera(deviceId) {
   stopCamera();
   if (!window.isSecureContext) { status("The camera only works over HTTPS (or on localhost).", "bad"); return; }
   status("Starting the camera…");
-  const base = { width: { ideal: 3840 }, height: { ideal: 2160 }, advanced: [{ focusMode: "continuous" }] };
+  // zoom: true asks for zoom permission; Chrome only reports zoom in the camera's capabilities when it was requested
+  const base = { width: { ideal: 3840 }, height: { ideal: 2160 }, zoom: true, advanced: [{ focusMode: "continuous" }] };
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: deviceId ? { ...base, deviceId: { exact: deviceId } } : { ...base, facingMode: { ideal: "environment" } } });
   } catch (err) {
     status(err.name === "NotAllowedError" ? "Camera permission was denied. Allow it in the browser's site settings." : "Could not start the camera: " + err.message, "bad"); return;
   }
-  video.srcObject = stream; await video.play();
+  video.srcObject = stream; await video.play(); ctlTouched = false;
   source = "video"; still.hidden = true; video.hidden = false; $("#placeholder").hidden = true;
   stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   const track = stream.getVideoTracks()[0], caps = track.getCapabilities?.() || {};
   $("#camInfo").textContent = `Camera: ${video.videoWidth}×${video.videoHeight}.`;
   setupCamControls(track);
+  // some phones report flashlight/focus/zoom only once the camera is delivering frames: check again shortly
+  for (const ms of [700, 2000]) setTimeout(() => { if (stream?.getVideoTracks()[0] === track && !ctlTouched) setupCamControls(track); }, ms);
   const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
   const sel = $("#camSelect"); sel.innerHTML = cams.map((c, i) => `<option value="${esc(c.deviceId)}">${esc(c.label || "Camera " + (i + 1))}</option>`).join("");
   sel.value = track.getSettings().deviceId || ""; sel.hidden = cams.length < 2;
@@ -453,6 +456,7 @@ async function setTrack(c) {
   const track = stream?.getVideoTracks()[0]; if (!track) return false;
   try { await track.applyConstraints({ advanced: [c] }); return true; } catch (e) { status("The camera refused: " + (e.message || e.name), "warn"); return false; }
 }
+let ctlTouched = false;
 function setupCamControls(track) {
   const caps = track.getCapabilities?.() || {}, set = track.getSettings?.() || {}, missing = [];
   $("#camControls").hidden = false;
@@ -475,23 +479,33 @@ function setupCamControls(track) {
   $("#ctlNote").textContent = missing.length ? `Not adjustable with this camera and browser: ${missing.join(", ")}.` : "";
 }
 function showFocus() { const v = +$("#focus").value; $("#focusVal").textContent = v >= 1 ? `${v.toFixed(2)} m` : `${Math.round(v * 100)} cm`; }
-$("#torch").onclick = async () => {
+$("#torch").onclick = async () => { ctlTouched = true;
   const on = !$("#torch").dataset.on;
   if (await setTrack({ torch: on })) { $("#torch").dataset.on = on ? "1" : ""; $("#torch").textContent = on ? "Flashlight off" : "Flashlight"; }
 };
-$("#autoFocus").onchange = async () => {
+$("#autoFocus").onchange = async () => { ctlTouched = true;
   const auto = $("#autoFocus").checked; $("#focus").disabled = auto;
   const modes = stream?.getVideoTracks()[0]?.getCapabilities?.().focusMode || [];
   if (auto) await setTrack({ focusMode: modes.includes("continuous") ? "continuous" : "single-shot" });
   else await setTrack({ focusMode: "manual", focusDistance: +$("#focus").value });
 };
 let focusTimer = 0;
-$("#focus").oninput = () => { showFocus(); clearTimeout(focusTimer);
+$("#focus").oninput = () => { ctlTouched = true; showFocus(); clearTimeout(focusTimer);
   focusTimer = setTimeout(() => setTrack({ focusMode: "manual", focusDistance: +$("#focus").value }), 60); };
 let zoomTimer = 0;
-$("#zoom").oninput = () => { $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
+$("#zoom").oninput = () => { ctlTouched = true; $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
   zoomTimer = setTimeout(() => setTrack({ zoom: +$("#zoom").value }), 60); };
 $("#capture").onclick = () => scan("manual");
+/** Raw camera information, to see what the browser actually offers. */
+$("#camDetails").onclick = () => {
+  const track = stream?.getVideoTracks()[0], pre = $("#camDump");
+  const sup = navigator.mediaDevices.getSupportedConstraints?.() || {};
+  const info = { browser: navigator.userAgent, camera: track?.label || "(camera not running)",
+    browserSupports: Object.fromEntries(["torch", "focusMode", "focusDistance", "zoom", "exposureMode", "pointsOfInterest"].map(k => [k, !!sup[k]])),
+    capabilities: track?.getCapabilities?.() || null, settings: track?.getSettings?.() || null };
+  pre.textContent = JSON.stringify(info, null, 1); pre.hidden = false;
+  navigator.clipboard?.writeText(pre.textContent).then(() => $("#ctlNote").textContent = "Camera details copied to the clipboard.", () => {});
+};
 
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
 const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
