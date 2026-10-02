@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.02-2">
+<meta name="app-version" content="scan-test 2026.10.02-3">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -76,7 +76,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
     </div>
     <p class="status" id="status"></p>
     <p class="hint" id="diag"></p>
-    <p class="hint">Line the card up with the white outline, upright, in good light. The site reads the two marked areas: the <b>name</b> and the <b>set code and collector number</b> in the bottom-left corner. <span id="camInfo"></span></p>
+    <p class="hint">Hold the card upright in front of the camera, in good light. The white outline follows the card; a dashed outline means no card is found yet. The site reads the two marked areas: the <b>name</b> and the <b>set code and collector number</b> in the bottom-left corner. <span id="camInfo"></span></p>
   </section>
   <section>
     <div class="panel" id="resultPanel" hidden>
@@ -98,6 +98,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.02-2"></script>
+<script src="scan.js?v=2026.10.02-3"></script>
 </body>
 </html>

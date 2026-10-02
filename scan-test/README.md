@@ -4,8 +4,10 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 ## How it works
 
-1. The camera picture shows a white card outline. Line the card up with it: this sets the distance, so the text is always about the same size.
-2. When the card has been still for about half a second, the page cuts out two areas and reads them with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
+1. The page looks for the card in every camera frame (about 5 times a second) and draws a white outline around it, so you can hold the card anywhere and at any distance. A dashed outline means no card is found yet. If the card is too small in the picture to read, it says **Move the card closer**.
+   - Finding the card: the picture is shrunk to 320 px wide, edges are found, and the rectangle with a card's proportions whose four sides are covered by straight, consistent edges wins. It works for a card held roughly upright (up to about 5° tilt).
+   - A black-bordered card on a dark table may be outlined at its inner frame instead of its outer edge.
+2. When the card has been found and still for about half a second, the page cuts out two areas and reads them with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
    - the **name** bar,
    - the **bottom-left corner**: collector number, set code and language (printed on cards since about 2014).
 3. It identifies the card on Scryfall:
@@ -15,7 +17,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 4. **What was read** shows the cut-out areas and the raw text, to see why a scan failed.
 5. The log counts automatic matches, chosen printings and failures, and can be copied as text (`1 Sol Ring (DSC) 94`).
 
-**Test with a photo** reads a photo instead. A photo cropped to just the card is read as the whole card; a wider photo is read through the outline.
+**Test with a photo** reads a photo instead. The card is found in the photo the same way; a photo cropped to just the card is read as the whole card.
 
 ## Notes
 

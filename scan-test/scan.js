@@ -65,7 +65,7 @@ function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : source ? "photo" : "off";
   el.textContent = `Text reader: ${readerState} · Camera: ${cam}` +
-    (source === "video" ? ` · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
+    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%)` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
 addEventListener("error", e => { status("Error: " + e.message, "bad"); lastEvent = "error"; diag(); });
@@ -84,25 +84,106 @@ function outlineRect() {
   if (w > W * 0.85) { w = W * 0.85; h = w / CARD_RATIO; }
   return { x: (W - w) / 2, y: (H - h) / 2, w, h };
 }
-/** The card area in source pixels (video or photo), from the outline. */
+/** How the source is drawn on the stage (object-fit cover, or contain for a photo of just the card). */
+function fit() {
+  const [sw, sh] = srcSize(), W = stage.clientWidth, H = stage.clientHeight;
+  const s = source === "photoCard" ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  return { s, ox: (W - sw * s) / 2, oy: (H - sh * s) / 2 };
+}
+const toStage = r => { const f = fit(); return { x: r.x * f.s + f.ox, y: r.y * f.s + f.oy, w: r.w * f.s, h: r.h * f.s }; };
+const toSource = o => { const f = fit(); return { x: (o.x - f.ox) / f.s, y: (o.y - f.oy) / f.s, w: o.w / f.s, h: o.h / f.s }; };
+/** The card area in source pixels: the detected card, else the guide outline. */
 function cardRectInSource() {
   const [sw, sh] = srcSize();
   if (source === "photoCard") return { x: 0, y: 0, w: sw, h: sh };
-  const W = stage.clientWidth, H = stage.clientHeight, s = Math.max(W / sw, H / sh);   // object-fit: cover
-  const ox = (W - sw * s) / 2, oy = (H - sh * s) / 2, o = outlineRect();
-  return { x: (o.x - ox) / s, y: (o.y - oy) / s, w: o.w / s, h: o.h / s };
+  return cardRect || toSource(outlineRect());
+}
+
+// ------------------------------------------------------------------ finding the card in the picture
+/* The picture is shrunk to 320 px wide; edges are found with a Sobel filter; long straight vertical and horizontal edges
+   become candidate card sides, and the rectangle with a card's proportions whose sides are best covered by edges wins.
+   Works for a card held roughly upright (up to about 5° tilt), at any distance and position. */
+const DET_W = 320;
+let cardRect = null, detMiss = 0, detCov = 0;
+function detectCard() {
+  const [sw, sh] = srcSize(); if (!sw || !sh) return null;
+  const W = DET_W, H = Math.max(40, Math.round(DET_W * sh / sw));
+  const cv = detectCard.cv || (detectCard.cv = document.createElement("canvas"));
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(srcEl(), 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, n = W * H, gray = new Float32Array(n);
+  for (let i = 0; i < n; i++) gray[i] = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000;
+  const sx = new Float32Array(n), sy = new Float32Array(n), col = new Float32Array(W), row = new Float32Array(H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x, a = gray[i - W - 1], b = gray[i - W], c = gray[i - W + 1], l = gray[i - 1], r = gray[i + 1], e = gray[i + W - 1], f = gray[i + W], h = gray[i + W + 1];
+    const ux = c + 2 * r + h - a - 2 * l - e, uy = e + 2 * f + h - a - 2 * b - c, vx = Math.abs(ux), vy = Math.abs(uy);
+    sx[i] = ux; sy[i] = uy;
+    if (vx > 2 * vy) col[x] += vx; else if (vy > 2 * vx) row[y] += vy;
+  }
+  const peaks = (arr, k) => {
+    const idx = [...arr.keys()].sort((p, q) => arr[q] - arr[p]), out = [];
+    for (const i of idx) { if (out.length >= k || arr[i] <= 0) break; if (out.every(j => Math.abs(j - i) > 3)) out.push(i); }
+    return out.sort((p, q) => p - q);
+  };
+  const cols = peaks(col, 16), rows = peaks(row, 16);
+  // a side scores where the gradient across it is strong AND has the same sign along the whole side
+  // (a real edge is dark-to-light the same way everywhere; texture and clutter flip randomly)
+  const EDGE = 40;
+  const pick = (arr, i, step) => { const a = arr[i - step] || 0, b = arr[i], c = arr[i + step] || 0; return Math.abs(a) > Math.abs(b) ? (Math.abs(a) > Math.abs(c) ? a : c) : (Math.abs(b) > Math.abs(c) ? b : c); };
+  const side = (vals) => { let sum = 0; for (const v of vals) sum += v; const sg = Math.sign(sum) || 1; let hit = 0; for (const v of vals) if (v * sg > EDGE) hit++; return vals.length ? hit / vals.length : 0; };
+  const coverage = (L, R, T, B) => {
+    const vl = [], vr = [], vt = [], vb = [];
+    for (let y = T + 4; y <= B - 4; y += 2) { vl.push(pick(sx, y * W + L, 1)); vr.push(pick(sx, y * W + R, 1)); }
+    for (let x = L + 4; x <= R - 4; x += 2) { vt.push(pick(sy, T * W + x, W)); vb.push(pick(sy, B * W + x, W)); }
+    const c = [side(vl), side(vr), side(vt), side(vb)];
+    return Math.min(...c) < 0.3 ? 0 : (c[0] + c[1] + c[2] + c[3]) / 4;   // every side must be at least partly visible (fingers may cover some)
+  };
+  const cands = [];
+  for (const L of cols) for (const R of cols) {
+    const w = R - L; if (w < W * 0.12) continue;
+    const hExp = w / CARD_RATIO; if (hExp < H * 0.25 || hExp > H * 1.05) continue;
+    for (const T of rows) {
+      let B = -1, bestD = hExp * 0.1;
+      for (const r of rows) { const dd = Math.abs(r - (T + hExp)); if (r > T && dd <= bestD) { bestD = dd; B = r; } }
+      if (B < 0 || Math.abs(w / (B - T) - CARD_RATIO) / CARD_RATIO > 0.06) continue;
+      const cov = coverage(L, R, T, B);
+      if (cov > 0.7) cands.push({ L, R, T, B, cov, area: w * (B - T) });
+    }
+  }
+  if (!cands.length) return null;
+  const top = Math.max(...cands.map(c => c.cov));
+  const best = cands.filter(c => c.cov >= top - 0.08).sort((p, q) => q.area - p.area)[0];   // the outer edge, not the inner frame
+  const k = sw / W;
+  return { x: best.L * k, y: best.T * k, w: (best.R - best.L) * k, h: (best.B - best.T) * k, cov: best.cov };
+}
+/** Track the card across frames: smooth small changes, jump to a new position only when it's seen twice. */
+let pending = null;
+function updateCard() {
+  const r = detectCard();
+  if (!r) { if (++detMiss > 3) { cardRect = null; detCov = 0; } return; }
+  detMiss = 0; detCov = r.cov;
+  const close = (a, b) => a && Math.abs(a.x - b.x) < b.w * 0.08 && Math.abs(a.y - b.y) < b.h * 0.08 && Math.abs(a.w - b.w) < b.w * 0.08;
+  if (close(cardRect, r)) { const m = 0.5; cardRect = { x: cardRect.x + (r.x - cardRect.x) * m, y: cardRect.y + (r.y - cardRect.y) * m, w: cardRect.w + (r.w - cardRect.w) * m, h: cardRect.h + (r.h - cardRect.h) * m }; }
+  else if (close(pending, r) || !cardRect) { cardRect = { x: r.x, y: r.y, w: r.w, h: r.h }; pending = null; }
+  else pending = r;
 }
 function drawOverlay() {
   if (!source) { overlay.toggleAttribute("hidden", true); return; }
   overlay.toggleAttribute("hidden", false);   // an <svg> has no .hidden property
-  const W = stage.clientWidth, H = stage.clientHeight, o = outlineRect(), r = o.w * 0.045;
+  const found = source === "photoCard" || !!cardRect;
+  const W = stage.clientWidth, H = stage.clientHeight, o = source === "photoCard" ? outlineRect() : cardRect ? toStage(cardRect) : outlineRect(), r = o.w * 0.045;
   const rr = (x, y, w, h, r) => `M${x + r},${y}h${w - 2 * r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${w - 2 * r}a${r},${r} 0 0 1 -${r},-${r}v-${h - 2 * r}a${r},${r} 0 0 1 ${r},-${r}z`;
   const zone = z => { const x = o.x + z.x * o.w, y = o.y + z.y * o.h, w = z.w * o.w, h = z.h * o.h;
     return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="5 4" opacity=".9"/>
       <text x="${z === ZONES.name ? x + 3 : x + w + 6}" y="${z === ZONES.name ? y + h + 13 : y + h / 2 + 4}" fill="#fff" font-size="12" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${z.label}</text>`; };
+  const label = (t, y) => `<text x="${W / 2}" y="${y}" text-anchor="middle" fill="#fff" font-size="14" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${t}</text>`;
+  const small = source === "video" && cardRect && cardRect.h < MIN_CARD_PX;
   overlay.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  overlay.innerHTML = `<path d="M0,0H${W}V${H}H0Z ${rr(o.x, o.y, o.w, o.h, r)}" fill="rgba(0,0,0,.5)" fill-rule="evenodd"/>
-    <path d="${rr(o.x, o.y, o.w, o.h, r)}" fill="none" stroke="#fff" stroke-width="3"/>${zone(ZONES.name)}${zone(ZONES.set)}`;
+  overlay.innerHTML = `<path d="M0,0H${W}V${H}H0Z ${rr(o.x, o.y, o.w, o.h, r)}" fill="rgba(0,0,0,${found ? .5 : .3})" fill-rule="evenodd"/>
+    <path d="${rr(o.x, o.y, o.w, o.h, r)}" fill="none" stroke="#fff" stroke-width="${found ? 3 : 2}" ${found ? "" : 'stroke-dasharray="10 8" opacity=".8"'}/>` +
+    (found ? zone(ZONES.name) + zone(ZONES.set) : label("Hold a card in front of the camera", o.y + o.h / 2)) +
+    (small ? label("Move the card closer", Math.min(H - 10, o.y + o.h + 20)) : "");
 }
 new ResizeObserver(drawOverlay).observe(stage);
 
@@ -241,7 +322,7 @@ async function scan(trigger = "auto") {
     const [rn, rs, codes] = await Promise.all([w.name.recognize(cn), w.set.recognize(cs), loadSets()]);
     const t1 = performance.now();
     const name = cleanName(rn.data.text), info = parseSetLine(rs.data.text, codes);
-    if (!name && !info.num && trigger === "auto") { status("No card text found. Line the card up with the outline.", "warn"); return; }
+    if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
     status("Looking up on Scryfall…");
     const res = await identify(name, info);
     const t2 = performance.now();
@@ -354,9 +435,9 @@ async function startCamera(deviceId) {
   const sel = $("#camSelect"); sel.innerHTML = cams.map((c, i) => `<option value="${esc(c.deviceId)}">${esc(c.label || "Camera " + (i + 1))}</option>`).join("");
   sel.value = track.getSettings().deviceId || ""; sel.hidden = cams.length < 2;
   $("#startCam").hidden = true; $("#stopCam").hidden = false; $("#capture").disabled = false;
-  drawOverlay(); armed = true; prev = null; stillFor = 0;
-  status("Line the card up with the white outline.");
-  getWorkers().then(() => status("Ready. Line the card up with the white outline.")).catch(e => status("Text reader failed to load: " + e.message, "bad"));
+  cardRect = null; pending = null; drawOverlay(); armed = true; prev = null; stillFor = 0;
+  status("Hold a card in front of the camera.");
+  getWorkers().then(() => status("Ready. Hold a card in front of the camera.")).catch(e => status("Text reader failed to load: " + e.message, "bad"));
 }
 function stopCamera() {
   stream?.getTracks().forEach(t => t.stop()); stream = null;
@@ -375,19 +456,29 @@ $("#torch").onclick = async () => {
 $("#capture").onclick = () => scan("manual");
 
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
+const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
 const STILL = 8;                                  // average brightness change per pixel (0–255) that still counts as "not moving"
-let armed = true, prev = null, stillFor = 0, lastShot = null;
+let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0;
 setInterval(() => {
   if (source !== "video" || !video.videoWidth) return;
+  if (!busy) updateCard();
+  drawOverlay();
+  if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
+    prev = null; stillFor = 0; motion = null; diag();
+    if (++goneFor >= 5 && !armed) { armed = true; status("Hold a card in front of the camera."); }
+    return;
+  }
+  goneFor = 0;
   const t = thumb();
   motion = prev ? diff(t, prev) : null; prev = t; diag();
   if (!$("#auto").checked || busy) return;
   if (!armed) {
-    if (lastShot && diff(t, lastShot) > 16) { armed = true; status("Hold the card still inside the outline…"); }
+    if (lastShot && diff(t, lastShot) > 16) { armed = true; status("Hold the card still…"); }
     return;
   }
+  if (cardRect.h < MIN_CARD_PX || detMiss > 0) { stillFor = 0; return; }   // too far away, or not seen in this frame   // too far away to read: the overlay says "Move the card closer"
   stillFor = motion !== null && motion < STILL ? stillFor + 1 : 0;
-  if (stillFor >= 3 && spread(t) > 12) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
+  if (stillFor >= 3) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
 }, 200);
 
 // ------------------------------------------------------------------ photo
@@ -397,11 +488,19 @@ $("#photo").onchange = async () => {
   stopCamera();
   still.src = URL.createObjectURL(f); await still.decode();
   const a = still.naturalWidth / still.naturalHeight;
-  source = Math.abs(a - CARD_RATIO) / CARD_RATIO < 0.12 ? "photoCard" : "photo";   // just the card, or a wider picture
-  still.style.objectFit = source === "photoCard" ? "contain" : "cover";
-  stage.style.aspectRatio = source === "photoCard" ? "16 / 9" : `${still.naturalWidth} / ${still.naturalHeight}`;
+  source = "photo"; still.style.objectFit = "cover";
+  stage.style.aspectRatio = `${still.naturalWidth} / ${still.naturalHeight}`;
   video.hidden = true; still.hidden = false; $("#placeholder").hidden = true; $("#capture").disabled = false;
-  $("#camInfo").textContent = `Photo: ${still.naturalWidth}×${still.naturalHeight}` + (source === "photoCard" ? ", read as the whole card." : ", the card must be inside the outline.");
-  await new Promise(r => requestAnimationFrame(r)); drawOverlay();
+  await new Promise(r => requestAnimationFrame(r));
+  cardRect = detectCard();                          // find the card in the photo first
+  const cardShaped = Math.abs(a - CARD_RATIO) / CARD_RATIO < 0.12;
+  if (cardRect && cardShaped && cardRect.w > still.naturalWidth * 0.85) cardRect = null;   // that's the frame inside a cropped card
+  if (!cardRect && cardShaped) {                    // a photo of just the card
+    source = "photoCard"; still.style.objectFit = "contain"; stage.style.aspectRatio = "16 / 9";
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  $("#camInfo").textContent = `Photo: ${still.naturalWidth}×${still.naturalHeight}, ` +
+    (cardRect ? "card found in the picture." : source === "photoCard" ? "read as the whole card." : "no card edges found: reading inside the guide.");
+  drawOverlay();
   scan("photo");
 };
