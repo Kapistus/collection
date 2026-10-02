@@ -1,6 +1,6 @@
 "use strict";
 /* Card Scanner Test: standalone page.
-   Camera (or a photo) -> white card outline -> read the name bar and the bottom-left set/number line with Tesseract.js
+   Camera -> card found in the picture -> white outline -> read the name bar and the bottom-left set/number line with Tesseract.js
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
@@ -17,8 +17,8 @@ const LANGS = ["EN", "DE", "FR", "IT", "ES", "PT", "JA", "KO", "RU", "ZHS", "ZHT
 const API = "https://api.scryfall.com";
 const abs = p => new URL(p, location.href).href;
 
-const video = $("#video"), still = $("#still"), stage = $("#stage"), overlay = $("#overlay");
-let stream = null, source = null;                 // source: "video" | "photo" | "photoCard"
+const video = $("#video"), stage = $("#stage"), overlay = $("#overlay");
+let stream = null, source = null;                 // source: "video" while the camera runs
 let workers = null, busy = false, setCodes = null;
 let log = [], current = null;
 
@@ -66,31 +66,27 @@ function getWorkers() {
 let motion = null, lastEvent = "";
 function diag() {
   const el = $("#diag"); if (!el) return;
-  const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : source ? "photo" : "off";
+  const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
   el.textContent = `Text reader: ${readerState} · Camera: ${cam}` +
-    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
+    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : choosing ? "paused until you choose the printing or skip" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
 addEventListener("error", e => { status("Error: " + e.message, "bad"); lastEvent = "error"; diag(); });
 addEventListener("unhandledrejection", e => { status("Error: " + (e.reason?.message || e.reason), "bad"); lastEvent = "error"; diag(); });
 
 // ------------------------------------------------------------------ geometry
-const srcSize = () => source === "video" ? [video.videoWidth, video.videoHeight] : [still.naturalWidth, still.naturalHeight];
+const srcSize = () => [video.videoWidth, video.videoHeight];
 /** The white outline, in stage pixels. */
 function outlineRect() {
   const W = stage.clientWidth, H = stage.clientHeight;
-  if (source === "photoCard") {                    // a photo of just the card: the outline is the photo itself
-    const [sw, sh] = srcSize(), s = Math.min(W / sw, H / sh);
-    return { x: (W - sw * s) / 2, y: (H - sh * s) / 2, w: sw * s, h: sh * s };
-  }
   let h = H * 0.8, w = h * CARD_RATIO;
   if (w > W * 0.85) { w = W * 0.85; h = w / CARD_RATIO; }
   return { x: (W - w) / 2, y: (H - h) / 2, w, h };
 }
-/** How the source is drawn on the stage (object-fit cover, or contain for a photo of just the card). */
+/** How the camera picture is drawn on the stage (object-fit: cover). */
 function fit() {
   const [sw, sh] = srcSize(), W = stage.clientWidth, H = stage.clientHeight;
-  const s = source === "photoCard" ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  const s = Math.max(W / sw, H / sh);
   return { s, ox: (W - sw * s) / 2, oy: (H - sh * s) / 2 };
 }
 const toStage = r => { const f = fit(); return { x: r.x * f.s + f.ox, y: r.y * f.s + f.oy, w: r.w * f.s, h: r.h * f.s }; };
@@ -98,7 +94,6 @@ const toSource = o => { const f = fit(); return { x: (o.x - f.ox) / f.s, y: (o.y
 /** The card area in source pixels: the detected card, else the guide outline. */
 function cardRectInSource() {
   const [sw, sh] = srcSize();
-  if (source === "photoCard") return { x: 0, y: 0, w: sw, h: sh };
   return cardRect || toSource(outlineRect());
 }
 
@@ -194,10 +189,10 @@ function updateCard() {
 function drawOverlay() {
   if (!source) { overlay.toggleAttribute("hidden", true); return; }
   overlay.toggleAttribute("hidden", false);   // an <svg> has no .hidden property
-  const found = source === "photoCard" || !!cardRect;
-  const W = stage.clientWidth, H = stage.clientHeight, o = source === "photoCard" ? outlineRect() : cardRect ? toStage(cardRect) : outlineRect(), r = o.w * 0.045;
+  const found = !!cardRect;
+  const W = stage.clientWidth, H = stage.clientHeight, o = cardRect ? toStage(cardRect) : outlineRect(), r = o.w * 0.045;
   const rr = (x, y, w, h, r) => `M${x + r},${y}h${w - 2 * r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${w - 2 * r}a${r},${r} 0 0 1 -${r},-${r}v-${h - 2 * r}a${r},${r} 0 0 1 ${r},-${r}z`;
-  const bx = source !== "photoCard" && cardRect && cardAlt ? toStage(readBox(cardRect, cardAlt)) : o;
+  const bx = cardRect && cardAlt ? toStage(readBox(cardRect, cardAlt)) : o;
   const zone = z => { const x = bx.x + z.x * bx.w, y = bx.y + z.y * bx.h, w = z.w * bx.w, h = z.h * bx.h;
     return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="#fff" stroke-width="1.5" stroke-dasharray="5 4" opacity=".9"/>
       <text x="${z === ZONES.name ? x + 3 : x + w + 6}" y="${z === ZONES.name ? y + h + 13 : y + h / 2 + 4}" fill="#fff" font-size="12" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${z.label}</text>`; };
@@ -212,7 +207,7 @@ function drawOverlay() {
 new ResizeObserver(drawOverlay).observe(stage);
 
 // ------------------------------------------------------------------ image processing
-const srcEl = () => source === "video" ? video : still;
+const srcEl = () => video;
 /** Cut a zone out of the card, scaled so the text is a good size for the reader, as dark text on a light background. */
 function zoneCanvas(z, src = srcEl(), c = cardRectInSource()) {
   return stripCanvas(src, c.x + z.x * c.w, c.y + z.y * c.h, z.w * c.w, z.h * c.h, z.px);
@@ -417,7 +412,7 @@ function readBox(r, a) {
   return { x: x0, y: y0, w: Math.max(r.x + r.w, a.x + a.w) - x0, h: Math.max(r.y + r.h, a.y + a.h) - y0 };
 }
 function snapshotCard() {
-  const [sw, sh] = srcSize(), r = cardRectInSource(), a = source !== "photoCard" && cardRect && cardAlt ? cardAlt : null;
+  const [sw, sh] = srcSize(), r = cardRectInSource(), a = cardRect && cardAlt ? cardAlt : null;
   const ux0 = Math.min(r.x, a ? a.x : r.x), uy0 = Math.min(r.y, a ? a.y : r.y);
   const ux1 = Math.max(r.x + r.w, a ? a.x + a.w : 0), uy1 = Math.max(r.y + r.h, a ? a.y + a.h : 0);
   const x = Math.max(0, Math.floor(ux0)), y = Math.max(0, Math.floor(uy0));
@@ -492,7 +487,7 @@ async function scan(trigger = "auto") {
     if (res.card) addLog(res.card, res.how, t2 - t0);
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
-    status(res.card ? `Found: ${res.card.name}` : res.how === "choose" ? "Name found. Choose the printing you have." : "Not recognised. Try again, or type the name.",
+    status(res.card ? `Found: ${res.card.name}` : res.how === "choose" ? "Name found. Choose the printing you have (scanning is paused until you choose or skip)." : "Not recognised. Try again, or type the name.",
       res.card ? "ok" : res.how === "choose" ? "warn" : "bad");
   } catch (err) {
     console.error(err); status("Error: " + err.message, "bad");
@@ -516,6 +511,7 @@ function renderResult() {
         <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
+  choosing = !pw.hidden;                            // automatic scanning pauses until a printing is chosen or skipped
   if (c.res.prints && !card) {
     $("#pickerHint").textContent = c.res.suggested.size ? "Green = matches what was read." : "Pick the printing you have (newest first).";
     $("#picker").innerHTML = c.res.prints.map(p => `<button data-id="${esc(p.id)}" class="${c.res.suggested.has(p.id) ? "sug" : ""}">
@@ -535,8 +531,14 @@ $("#picker").addEventListener("click", ev => {
   const how = current.res.how === "typed-choose" ? "typed" : "chosen";
   current.res = { ...current.res, card, how };
   addLog(card, how, current.ms.read + current.ms.lookup);
-  renderResult(); status(`Chosen: ${card.name} (${card.set.toUpperCase()} #${card.collector_number})`, "ok");
+  renderResult(); status(`Chosen: ${card.name} (${card.set.toUpperCase()} #${card.collector_number}). Show the next card.`, "ok");
 });
+let choosing = false;
+$("#skipPick").onclick = () => {
+  choosing = false; $("#pickerWrap").hidden = true;
+  if (current) current.res = { ...current.res, prints: null };
+  status("Skipped. Show the next card.");
+};
 function addLog(card, how, ms, what = "") {
   const m = current?.mode || (how === "typed" ? "–" : mode);
   log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m });
@@ -589,13 +591,25 @@ async function startCamera(deviceId) {
   status("Starting the camera…");
   // zoom: true asks for zoom permission; Chrome only reports zoom in the camera's capabilities when it was requested
   const base = { width: { ideal: 3840 }, height: { ideal: 2160 }, zoom: true, advanced: [{ focusMode: "continuous" }] };
+  // the camera chosen now, else the one used last time: by its id, or by its name if the browser changed the id
+  let want = deviceId || "";
+  if (!want) {
+    let saved = null; try { saved = JSON.parse(localStorage.getItem("scanCamera") || "null"); } catch {}
+    if (saved?.id) {
+      const cams = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === "videoinput");
+      want = (cams.find(c => c.deviceId === saved.id) || cams.find(c => c.label && c.label === saved.label))?.deviceId || saved.id;
+    }
+  }
+  const open = id => navigator.mediaDevices.getUserMedia({ audio: false, video: id ? { ...base, deviceId: { exact: id } } : { ...base, facingMode: { ideal: "environment" } } });
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: deviceId ? { ...base, deviceId: { exact: deviceId } } : { ...base, facingMode: { ideal: "environment" } } });
+    try { stream = await open(want); }
+    catch (err) { if (!want || err.name === "NotAllowedError") throw err; stream = await open(""); }   // remembered camera gone: use the default
   } catch (err) {
     status(err.name === "NotAllowedError" ? "Camera permission was denied. Allow it in the browser's site settings." : "Could not start the camera: " + err.message, "bad"); return;
   }
+  { const t = stream.getVideoTracks()[0]; try { localStorage.setItem("scanCamera", JSON.stringify({ id: t.getSettings().deviceId || "", label: t.label || "" })); } catch {} }
   video.srcObject = stream; await video.play(); ctlTouched = false;
-  source = "video"; still.hidden = true; video.hidden = false; $("#placeholder").hidden = true;
+  source = "video"; video.hidden = false; $("#placeholder").hidden = true;
   stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   const track = stream.getVideoTracks()[0], caps = track.getCapabilities?.() || {};
   $("#camInfo").textContent = `Camera: ${video.videoWidth}×${video.videoHeight}.`;
@@ -664,7 +678,7 @@ $("#focus").oninput = () => { ctlTouched = true; showFocus(); clearTimeout(focus
 let zoomTimer = 0;
 $("#zoom").oninput = () => { ctlTouched = true; $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
   zoomTimer = setTimeout(() => setTrack({ zoom: +$("#zoom").value }), 60); };
-$("#capture").onclick = () => scan("manual");
+$("#capture").onclick = () => { choosing = false; scan("manual"); };   // an explicit capture ends a pending choice
 /** Raw camera information, to see what the browser actually offers. */
 $("#camDetails").onclick = () => {
   const track = stream?.getVideoTracks()[0], pre = $("#camDump");
@@ -692,7 +706,7 @@ setInterval(() => {
   goneFor = 0;
   const t = thumb();
   motion = prev ? diff(t, prev) : null; prev = t; diag();
-  if (!$("#auto").checked || busy) return;
+  if (!$("#auto").checked || busy || choosing) return;   // paused while a printing is being chosen
   if (!armed) {
     if (lastShot && diff(t, lastShot) > 16) { armed = true; status("Hold the card still…"); }
     return;
@@ -702,27 +716,3 @@ setInterval(() => {
   if (stillFor >= 3) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
 }, 200);
 
-// ------------------------------------------------------------------ photo
-$("#photoBtn").onclick = () => $("#photo").click();
-$("#photo").onchange = async () => {
-  const f = $("#photo").files[0]; $("#photo").value = ""; if (!f) return;
-  stopCamera();
-  still.src = URL.createObjectURL(f); await still.decode();
-  const a = still.naturalWidth / still.naturalHeight;
-  source = "photo"; still.style.objectFit = "cover";
-  stage.style.aspectRatio = `${still.naturalWidth} / ${still.naturalHeight}`;
-  video.hidden = true; still.hidden = false; $("#placeholder").hidden = true; $("#capture").disabled = false;
-  await new Promise(r => requestAnimationFrame(r));
-  const det = detectCard();                         // find the card in the photo first
-  cardRect = det && { x: det.x, y: det.y, w: det.w, h: det.h }; cardAlt = det?.alt || null; cardIsFrame = !!det?.frame;
-  const cardShaped = Math.abs(a - CARD_RATIO) / CARD_RATIO < 0.12;
-  if (cardRect && cardShaped && cardRect.w > still.naturalWidth * 0.85) { cardRect = cardAlt = null; cardIsFrame = false; }   // that's the frame inside a cropped card
-  if (!cardRect && cardShaped) {                    // a photo of just the card
-    source = "photoCard"; still.style.objectFit = "contain"; stage.style.aspectRatio = "16 / 9";
-    await new Promise(r => requestAnimationFrame(r));
-  }
-  $("#camInfo").textContent = `Photo: ${still.naturalWidth}×${still.naturalHeight}, ` +
-    (cardRect ? "card found in the picture." : source === "photoCard" ? "read as the whole card." : "no card edges found: reading inside the guide.");
-  drawOverlay();
-  scan("photo");
-};

@@ -22,7 +22,9 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 4. **What was read** shows the cut-out areas and the raw text, to see why a scan failed.
 5. The log counts automatic matches, chosen printings and failures, and can be copied as text (`1 Sol Ring (DSC) 94`).
 
-**Test with a photo** reads a photo instead. The card is found in the photo the same way; a photo cropped to just the card is read as the whole card.
+**While you choose a printing**, automatic scanning pauses, so the list doesn't change under you. Choosing a printing or pressing **Skip** continues; **Capture now** also ends the choice.
+
+**Camera:** the page remembers the camera you used last and starts with it next time (matched by its id, or by its name if the browser has changed the id). If it's no longer available, the default back camera is used.
 
 ## Notes
 
@@ -30,7 +32,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 - The text reader loads about 9 MB the first time; the browser keeps the language data afterwards.
 - **Flashlight, focus and zoom** controls appear under the buttons. They work only where the browser and camera allow it: mostly Chrome on Android, and some webcams in desktop Chrome. iPhone Safari and Firefox don't offer them. Only the controls the camera allows are shown; the note next to **Camera details** lists what isn't available. **Camera details** shows (and copies) exactly what the camera and browser report, for troubleshooting. On phones with several back cameras, try each one in the camera list: often only the main camera has a flashlight and adjustable focus.
   - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
-- Foil can't be seen reliably in a photo.
+- Foil can't be seen reliably by the camera.
 
 ## Deploying
 

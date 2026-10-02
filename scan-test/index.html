@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.02-9">
+<meta name="app-version" content="scan-test 2026.10.02-10">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -66,8 +66,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <select id="camSelect" hidden title="Camera"></select>
       <label class="check"><input type="checkbox" id="auto" checked> Capture automatically</label>
       <button id="capture" disabled>Capture now</button>
-      <button id="photoBtn">Test with a photo…</button>
-      <input type="file" id="photo" accept="image/*" hidden>
     </div>
     <div class="controls">
       <span class="ctl mode" role="radiogroup" aria-label="Capture mode"><b>Mode</b>
@@ -83,8 +81,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
     </div>
     <div class="stage" id="stage">
       <video id="video" playsinline muted hidden></video>
-      <img id="still" alt="" hidden>
-      <div class="placeholder" id="placeholder">Start the camera, or test with a photo of a card.</div>
+      <div class="placeholder" id="placeholder">Start the camera to scan cards.</div>
       <svg id="overlay" hidden></svg>
     </div>
     <p class="status" id="status"></p>
@@ -98,7 +95,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <h2>Last scan</h2>
       <div id="result"></div>
       <div id="pickerWrap" hidden>
-        <p class="hint" id="pickerHint"></p>
+        <div class="row"><p class="hint" id="pickerHint" style="margin:0;flex:1"></p><button id="skipPick" title="Don't add this card; continue scanning">Skip</button></div>
         <div class="picker" id="picker"></div>
       </div>
       <div class="manual"><input type="text" id="manualName" placeholder="Wrong card? Type the name…" list="acList"><datalist id="acList"></datalist><button id="manualGo">Find</button></div>
@@ -113,6 +110,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.02-9"></script>
+<script src="scan.js?v=2026.10.02-10"></script>
 </body>
 </html>
