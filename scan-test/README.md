@@ -36,6 +36,16 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
   - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
 - Foil can't be seen reliably by the camera.
 
+## Card index (on the device)
+
+Lookups run on the phone from a compact list of every printing; Scryfall is asked only when the list can't answer.
+
+- **Built on GitHub:** `.github/workflows/build-card-index.yml` runs `tools/build_card_index.py` every Monday (and on demand: Actions tab → *Build card index* → *Run workflow*, e.g. after a new set). It downloads Scryfall's *Default Cards* bulk file and writes `data/cards.txt.gz` (set, collector number, language, finishes, name and Scryfall id of every paper printing) and `data/version.json`, and commits them only when the cards changed. The workflow needs *Read and write permissions* (Settings → Actions → General → Workflow permissions).
+- **Kept on the device:** the page checks `data/version.json` at start and downloads the index only when it's new, then keeps it in the browser's IndexedDB. The diagnostics line shows the index state and date.
+- **Lookup order:** set code + number on the device → name on the device (closest real card name, allowing misread letters, narrowed by set code or number) → Scryfall online. Scryfall is used when the index isn't there yet, when the set code read belongs to a set newer than the index, or when no name is close enough. The result says *found on the device* or *looked up online*, and the log marks online lookups.
+- Card images load straight from Scryfall's image server using the card's id.
+- To build the index on your own computer instead: `pip install ijson`, then `python3 tools/build_card_index.py` (writes `data/`).
+
 ## Version
 
 The version is shown in small text at the top right. When you change `scan.js`, bump it in three places: `VERSION` in `scan.js`, and the `app-version` meta tag and `scan.js?v=` in `index.html`. If the tag turns red and says *reload*, the browser is mixing old and new files: reload, clearing the cache (Ctrl+F5, or a new incognito tab on a phone).

@@ -4,7 +4,7 @@
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.02-12";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.02-13";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -42,9 +42,11 @@ async function sf(path) {
   return r.json();
 }
 async function loadSets() {
-  if (setCodes) return setCodes;
+  if (setCodes?.size) return setCodes;
+  if (IDX.data && !navigator.onLine) return new Set([...IDX.data.sets.keys()].map(c => c.toUpperCase()));
   try { const d = await sf("/sets"); setCodes = new Set((d?.data || []).map(s => s.code.toUpperCase())); }
   catch { setCodes = new Set(); }
+  if (IDX.data) for (const c of IDX.data.sets.keys()) setCodes.add(c.toUpperCase());
   return setCodes;
 }
 
@@ -73,7 +75,7 @@ let motion = null, lastEvent = "";
 function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
-  el.textContent = `Text reader: ${readerState} · Camera: ${cam}` +
+  el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` +
     (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : choosing ? "paused until you choose the printing or skip" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
@@ -409,6 +411,131 @@ async function readSet(w, snap, codes) {
   return tries.sort((a, b) => score(b) - score(a))[0];
 }
 
+// ------------------------------------------------------------------ local card index
+/* A compact list of every printing (built from Scryfall's bulk data by tools/build_card_index.py, see data/version.json),
+   downloaded once and kept in the browser's IndexedDB. Lookups run on the device; Scryfall is asked only when the
+   index can't answer (not downloaded yet, a set newer than the index, or no good match). */
+const IDX = { state: "not loaded", data: null, version: null };
+function idbOpen() {
+  return new Promise((res, rej) => { const r = indexedDB.open("cardScanner", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function idbGet(k) { const db = await idbOpen(); return new Promise((res, rej) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+async function idbSet(k, v) { const db = await idbOpen(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+const fmtN = n => n.toLocaleString("en-US");
+async function loadIndex() {
+  IDX.state = "checking…"; diag();
+  let ver = null, stored = null;
+  try { const r = await fetch(abs("data/version.json"), { cache: "no-cache" }); if (r.ok) ver = await r.json(); } catch {}
+  try { stored = await idbGet("index"); } catch {}
+  let text = null, v = null;
+  if (stored?.text && (!ver || stored.sha === ver.sha)) { text = stored.text; v = stored.version; }   // up to date (or offline: use what we have)
+  else if (ver) {
+    try {
+      const r = await fetch(abs(`data/cards.txt.gz?v=${ver.sha}`)); if (!r.ok) throw new Error("HTTP " + r.status);
+      const reader = r.body.getReader(), parts = []; let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length;
+        IDX.state = `downloading ${Math.min(99, Math.round(got * 100 / (ver.bytes || got)))}% of ${(ver.bytes / 1e6).toFixed(1)} MB`; diag(); }
+      const blob = new Blob(parts), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+      text = head[0] === 0x1f && head[1] === 0x8b ? await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text() : await blob.text();
+      v = ver;
+      try { await idbSet("index", { sha: ver.sha, version: ver, text }); } catch {}   // can't store: use it for this visit only
+    } catch (e) { if (stored?.text) { text = stored.text; v = stored.version; } else { IDX.state = "download failed, using Scryfall online"; diag(); return; } }
+  } else { IDX.state = "not available, using Scryfall online"; diag(); return; }
+  IDX.data = parseIndex(text); IDX.version = v;
+  IDX.state = `${fmtN(IDX.data.n)} printings, ${(v?.source_updated || v?.built || "").slice(0, 10)}`; diag();
+}
+const normName = s => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9぀-鿿가-힯]/g, "");
+const normCn = cn => String(cn).toLowerCase().replace(/^0+(?=\d)/, "");
+function parseIndex(text) {
+  const sets = new Map(), id = [], set = [], cn = [], lang = [], fin = [], name = [], printed = [];
+  let mode = "";
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    if (line[0] === "#") { mode = line; continue; }
+    const f = line.split("|");
+    if (mode === "#sets") sets.set(f[0], { name: f[1], released: f[2] });
+    else { id.push(f[0]); set.push(f[1]); cn.push(f[2]); lang.push(f[3]); fin.push(f[4]); name.push(f[5]); printed.push(f[6] || ""); }
+  }
+  const bySetCn = new Map(), byName = new Map(), buckets = new Map();
+  const add = (m, k, i) => { const a = m.get(k); if (a) a.push(i); else m.set(k, [i]); };
+  for (let i = 0; i < id.length; i++) {
+    add(bySetCn, `${set[i]}|${normCn(cn[i])}`, i);
+    const keys = new Set([name[i], ...name[i].split(" // "), ...(printed[i] ? [printed[i], ...printed[i].split(" // ")] : [])].map(normName).filter(Boolean));
+    for (const k of keys) add(byName, k, i);
+  }
+  for (const k of byName.keys()) add(buckets, k.length, k);
+  return { n: id.length, sets, id, set, cn, lang, fin, name, printed, bySetCn, byName, buckets };
+}
+/** A printing from the index, shaped like a Scryfall card object (image addresses follow from the id). */
+function printingOf(i) {
+  const D = IDX.data, h = D.id[i], uuid = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  const img = size => `https://cards.scryfall.io/${size}/front/${uuid[0]}/${uuid[1]}/${uuid}.jpg`;
+  const s = D.sets.get(D.set[i]) || {};
+  return { id: uuid, name: D.name[i], printed_name: D.printed[i] || undefined, set: D.set[i], set_name: s.name || D.set[i].toUpperCase(),
+    collector_number: D.cn[i], lang: D.lang[i], released_at: s.released || "", finishes: D.fin[i],
+    image_uris: { small: img("small"), normal: img("normal") }, uri: `https://scryfall.com/card/${D.set[i]}/${encodeURIComponent(D.cn[i])}`, local: true };
+}
+/** Edit distance, giving up (returning max + 1) once it can't stay within max. */
+function lev(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j), cur = new Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i; let rowMin = i;
+    for (let j = 1; j <= b.length; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); if (cur[j] < rowMin) rowMin = cur[j]; }
+    if (rowMin > max) return max + 1;
+    [prev, cur] = [cur, prev];
+  }
+  return prev[b.length];
+}
+/** Closest card name to the text read: tries the whole line and parts of it (junk letters from the frame or the
+    mana cost at either end), allowing about 1 wrong letter in 4. */
+function localName(line) {
+  const D = IDX.data, words = line.split(/\s+/).filter(Boolean);
+  let best = null;
+  for (let a = 0; a < words.length; a++) for (let b = words.length; b > a; b--) {
+    const dropped = a + words.length - b; if (dropped > 2) continue;
+    const q = normName(words.slice(a, b).join(" ")); if (q.length < 3) continue;
+    const kept = q.length / Math.max(1, normName(line).length); if (kept < 0.6) continue;   // keep most of what was read
+    const pen = dropped ? 0.02 + 0.08 * (1 - kept) : 0;                                         // dropping words costs a little
+    if (D.byName.has(q)) { const r = { key: q, sim: 1 - pen }; if (!best || r.sim > best.sim) best = r; continue; }
+    const maxD = Math.max(1, Math.round(q.length * 0.3)); let bk = null, bd = maxD + 1;
+    for (let len = q.length - maxD; len <= q.length + maxD; len++) for (const k of D.buckets.get(len) || []) { const d = lev(q, k, bd - 1 < 0 ? 0 : Math.min(maxD, bd)); if (d < bd) { bd = d; bk = k; } }
+    if (bk) { const r = { key: bk, sim: 1 - bd / Math.max(q.length, bk.length) - pen, len: q.length }; if (!best || r.sim > best.sim) best = r; }
+  }
+  return best && best.sim >= (best.len && best.len < 6 ? 0.75 : 0.7) ? best : null;
+}
+/** Identify on the device. Returns null when the index can't answer, so the caller asks Scryfall. */
+function localIdentify(names, info) {
+  const D = IDX.data; if (!D) return null;
+  if (info.sets.some(c => ![...D.sets.keys()].includes(c.toLowerCase()))) return null;   // a set newer than the index: ask Scryfall
+  const lang = info.lang || "en";
+  const nameSim = i => Math.max(0, ...names.flatMap(n => [D.name[i], ...D.name[i].split(" // "), D.printed[i]].filter(Boolean).map(x => similarity(n, x))));
+  // 1. set code + collector number
+  if (info.num && info.sets.length) {
+    for (const code of info.sets) {
+      const hits = D.bySetCn.get(`${code.toLowerCase()}|${normCn(info.num)}`) || [];
+      const i = hits.find(i => D.lang[i] === lang) ?? hits[0];
+      if (i != null && (!names.length || nameSim(i) >= 0.55)) return { card: printingOf(i), how: "set+number", nameUsed: names[0], src: "local" };
+    }
+  }
+  // 2. the name, narrowed down by whatever set code or number was read
+  for (const n of names) {
+    const m = localName(n); if (!m) continue;
+    const idx = D.byName.get(m.key).slice().sort((a, b) => (D.sets.get(D.set[b])?.released || "").localeCompare(D.sets.get(D.set[a])?.released || ""));
+    const prints = idx.map(printingOf);
+    const bySet = info.sets.length ? prints.filter(p => info.sets.includes(p.set.toUpperCase())) : [];
+    const pool = bySet.length ? bySet : prints;
+    const byNum = info.num ? pool.filter(p => normCn(p.collector_number) === normCn(info.num)) : [];
+    const r = { nameUsed: n, src: "local" };
+    if (byNum.length === 1) return { ...r, card: byNum[0], how: bySet.length ? "name+set+number" : "name+number" };
+    if (bySet.length === 1) return { ...r, card: bySet[0], how: "name+set" };
+    if (prints.length === 1) return { ...r, card: prints[0], how: "name (one printing)" };
+    return { ...r, card: null, how: "choose", named: prints[0], prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)) };
+  }
+  return null;
+}
+
 // ------------------------------------------------------------------ one scan
 /** Copy of the card area of the current frame, so reading isn't affected by the picture changing. */
 /** The box the read areas are placed in: the found card united with its other interpretation. */
@@ -484,7 +611,10 @@ async function scan(trigger = "auto") {
     const names = nm.names, name = names[0] || "", info = st.info, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
     const used = snap.frame ? "frame + border" : "outer edge";
     let res = null;
-    if (names.length || info.num) { status("Looking up on Scryfall…"); res = await identify(names, info); }
+    if (names.length || info.num) {
+      res = localIdentify(names, info);                     // on the device first
+      if (!res) { status("Looking up on Scryfall…"); res = await identify(names, info); if (res) res.src = "online"; }
+    }
     const t1 = performance.now();
     if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
     res ||= { card: null, how: "fail" };
@@ -532,7 +662,7 @@ function renderResult() {
   $("#result").innerHTML = card
     ? `<div class="result"><img src="${esc(img(card))}" alt=""><div><div class="name">${esc(card.printed_name || card.name)}</div>
         <div>${esc(card.set_name)} · ${esc(card.set.toUpperCase())} #${esc(card.collector_number)}${card.lang !== "en" ? " · " + esc(card.lang.toUpperCase()) : ""}</div>
-        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}</p></div></div>`
+        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}${c.res.src ? ` · ${c.res.src === "local" ? "found on the device" : "looked up online"}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   choosing = !pw.hidden;                            // automatic scanning pauses until a printing is chosen or skipped
@@ -565,15 +695,16 @@ $("#skipPick").onclick = () => {
 };
 function addLog(card, how, ms, what = "") {
   const m = current?.mode || (how === "typed" ? "–" : mode);
-  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m });
+  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m, src: current?.res?.src || "" });
   renderLog();
 }
 function renderLog() {
-  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${esc(l.mode)}</td><td>${(l.ms / 1000).toFixed(1)} s</td></tr>`).join("");
+  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${esc(l.mode)}</td><td>${(l.ms / 1000).toFixed(1)} s${l.src === "online" ? ' <span class="hint" title="Looked up on Scryfall, not in the card index">online</span>' : ""}</td></tr>`).join("");
   const line = (rows, label) => {
     const t = rows.length, count = k => rows.filter(l => HOW[l.how][0] === k).length, pct = n => ` (${Math.round(n * 100 / t)}%)`;
     return `<div>${label}<span>${t} scans</span> · <span>✔ automatic: ${count("exact")}${pct(count("exact"))}</span> · <span>✋ printing chosen: ${count("name")}${pct(count("name"))}</span> · ` +
-      `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span></div>`;
+      `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span>` +
+      (rows.some(l => l.src === "online") ? ` · <span>looked up online: ${rows.filter(l => l.src === "online").length}</span>` : "") + `</div>`;
   };
   const m1 = log.filter(l => l.mode === 1), m2 = log.filter(l => l.mode === 2);
   $("#stats").innerHTML = !log.length ? `<span class="hint">Nothing yet.</span>`
@@ -586,6 +717,7 @@ $("#copyLog").onclick = async () => {
 };
 $("#clearLog").onclick = () => { log = []; renderLog(); };
 renderLog();
+loadIndex().catch(e => { IDX.state = "failed: " + e.message + ", using Scryfall online"; diag(); });
 
 // typing a name: autocomplete, then the printing picker
 let acTimer = 0;
