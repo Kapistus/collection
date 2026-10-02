@@ -40,16 +40,36 @@ async function loadSets() {
 }
 
 // ------------------------------------------------------------------ text reader
-async function getWorkers() {
-  if (workers) return workers;
-  status("Loading the text reader (about 3–7 MB, only the first time)…");
-  const opts = { workerPath: abs("vendor/tesseract/worker.min.js"), corePath: abs("vendor/tesseract/core"), langPath: abs("vendor/tesseract/lang") };
-  const [name, set] = await Promise.all([Tesseract.createWorker("eng", 1, opts), Tesseract.createWorker("eng", 1, opts)]);
-  await name.setParameters({ tessedit_pageseg_mode: "7", preserve_interword_spaces: "1", user_defined_dpi: "300" });
-  await set.setParameters({ tessedit_pageseg_mode: "4", preserve_interword_spaces: "1", user_defined_dpi: "300" });   // a few lines of text; no character limits (tested better)
-  workers = { name, set };
-  return workers;
+let workersP = null, readerState = "not loaded";
+/** Load the two text readers once; concurrent callers share the same load. Fails after 90 s instead of hanging. */
+function getWorkers() {
+  if (workersP) return workersP;
+  readerState = "loading…"; diag();
+  status("Loading the text reader (about 9 MB, only the first time)…");
+  const opts = { workerPath: abs("vendor/tesseract/worker.min.js"), corePath: abs("vendor/tesseract/core"), langPath: abs("vendor/tesseract/lang"), gzip: false };
+  const load = (async () => {
+    const [name, set] = await Promise.all([Tesseract.createWorker("eng", 1, opts), Tesseract.createWorker("eng", 1, opts)]);
+    await name.setParameters({ tessedit_pageseg_mode: "7", preserve_interword_spaces: "1", user_defined_dpi: "300" });
+    await set.setParameters({ tessedit_pageseg_mode: "4", preserve_interword_spaces: "1", user_defined_dpi: "300" });   // a few lines of text; no character limits (tested better)
+    return { name, set };
+  })();
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timed out after 90 s")), 90000));
+  workersP = Promise.race([load, timeout]).then(w => { workers = w; readerState = "ready"; diag(); return w; },
+    err => { workersP = null; readerState = "failed: " + (err?.message || err); diag(); throw err; });
+  return workersP;
 }
+
+/** One line of live diagnostics under the picture, so problems can be reported. */
+let motion = null, lastEvent = "";
+function diag() {
+  const el = $("#diag"); if (!el) return;
+  const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : source ? "photo" : "off";
+  el.textContent = `Text reader: ${readerState} · Camera: ${cam}` +
+    (source === "video" ? ` · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
+    (lastEvent ? ` · Last: ${lastEvent}` : "");
+}
+addEventListener("error", e => { status("Error: " + e.message, "bad"); lastEvent = "error"; diag(); });
+addEventListener("unhandledrejection", e => { status("Error: " + (e.reason?.message || e.reason), "bad"); lastEvent = "error"; diag(); });
 
 // ------------------------------------------------------------------ geometry
 const srcSize = () => source === "video" ? [video.videoWidth, video.videoHeight] : [still.naturalWidth, still.naturalHeight];
@@ -117,7 +137,8 @@ function zoneCanvas(z) {
 /** Small grayscale copy of the card area, for detecting a still card. */
 function thumb() {
   const c = cardRectInSource(), cv = thumb.cv || (thumb.cv = Object.assign(document.createElement("canvas"), { width: 40, height: 56 }));
-  const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(srcEl(), c.x, c.y, c.w, c.h, 0, 0, 40, 56);
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(srcEl(), c.x, c.y, c.w, c.h, 0, 0, 40, 56);
   const d = g.getImageData(0, 0, 40, 56).data, out = new Float32Array(40 * 56);
   for (let i = 0; i < out.length; i++) out[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
   return out;
@@ -207,11 +228,14 @@ async function identify(name, info) {
 
 // ------------------------------------------------------------------ one scan
 async function scan(trigger = "auto") {
-  if (busy || !source) return;
+  if (!source) return;
+  if (busy) { if (trigger !== "auto") status("Still working on the previous scan…", "warn"); return; }
+  lastEvent = `${trigger} capture ${new Date().toLocaleTimeString()}`; diag();
   busy = true; $("#capture").disabled = true;
   const t0 = performance.now();
   try {
     const cn = zoneCanvas(ZONES.name), cs = zoneCanvas(ZONES.set);   // cut the areas first: the picture may change while waiting
+    if (!workers) status("Waiting for the text reader to load…");
     const w = await getWorkers();
     status("Reading…");
     const [rn, rs, codes] = await Promise.all([w.name.recognize(cn), w.set.recognize(cs), loadSets()]);
@@ -351,17 +375,19 @@ $("#torch").onclick = async () => {
 $("#capture").onclick = () => scan("manual");
 
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
+const STILL = 8;                                  // average brightness change per pixel (0–255) that still counts as "not moving"
 let armed = true, prev = null, stillFor = 0, lastShot = null;
 setInterval(() => {
-  if (source !== "video" || !$("#auto").checked || busy || !video.videoWidth) return;
+  if (source !== "video" || !video.videoWidth) return;
   const t = thumb();
-  const moving = prev ? diff(t, prev) : 99; prev = t;
+  motion = prev ? diff(t, prev) : null; prev = t; diag();
+  if (!$("#auto").checked || busy) return;
   if (!armed) {
     if (lastShot && diff(t, lastShot) > 16) { armed = true; status("Hold the card still inside the outline…"); }
     return;
   }
-  stillFor = moving < 3.5 ? stillFor + 1 : 0;
-  if (stillFor >= 3 && spread(t) > 14) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
+  stillFor = motion !== null && motion < STILL ? stillFor + 1 : 0;
+  if (stillFor >= 3 && spread(t) > 12) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
 }, 200);
 
 // ------------------------------------------------------------------ photo

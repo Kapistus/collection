@@ -20,7 +20,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 ## Notes
 
 - The camera only works over HTTPS (GitHub Pages) or on localhost.
-- The text reader loads about 3–7 MB the first time; the browser keeps the language data afterwards.
+- The text reader loads about 9 MB the first time; the browser keeps the language data afterwards.
 - **Flashlight** appears only when the browser can control it (usually Android Chrome).
 - Foil can't be seen reliably in a photo.
 
@@ -31,6 +31,6 @@ Put the `scan-test` folder in the Binder Share repository, next to `index.html`,
 ## Third-party code (in `vendor/tesseract/`)
 
 - tesseract.js 7.0.0 and tesseract.js-core 6.1.2, Apache License 2.0 (licenses included).
-- English language data (`eng.traineddata`, 4.0.0_best_int) from the Tesseract OCR project via `@tesseract.js-data/eng`, Apache License 2.0.
+- English language data (`eng.traineddata`, 4.0.0_best_int, uncompressed) from the Tesseract OCR project via `@tesseract.js-data/eng`, Apache License 2.0.
 
 Card data and images from [Scryfall](https://scryfall.com); not affiliated with or endorsed by Scryfall. Unofficial Fan Content permitted under the Fan Content Policy. Not approved/endorsed by Wizards.
