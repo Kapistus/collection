@@ -4,6 +4,12 @@
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
+const VERSION = "2026.10.02-11";                  // keep in step with index.html (meta app-version and scan.js?v=)
+{ // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
+  const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
+  el.textContent = "v" + VERSION;
+  if (page !== VERSION) { el.classList.add("old"); el.textContent += ` (page ${page || "?"}: reload)`; }
+}
 const CARD_RATIO = 63 / 88;                       // width / height of a Magic card
 // areas read, as fractions of the card (x, y, width, height)
 /* Read areas, as fractions of the "read box": the found card plus room for the other interpretation of the outline

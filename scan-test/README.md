@@ -34,6 +34,10 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
   - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
 - Foil can't be seen reliably by the camera.
 
+## Version
+
+The version is shown in small text at the top right. When you change `scan.js`, bump it in three places: `VERSION` in `scan.js`, and the `app-version` meta tag and `scan.js?v=` in `index.html`. If the tag turns red and says *reload*, the browser is mixing old and new files: reload, clearing the cache (Ctrl+F5, or a new incognito tab on a phone).
+
 ## Deploying
 
 Put the `scan-test` folder in the Binder Share repository, next to `index.html`, and open `https://<user>.github.io/<repo>/scan-test/`.
