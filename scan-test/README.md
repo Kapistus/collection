@@ -37,6 +37,17 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
   - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
 - Foil can't be seen reliably by the camera.
 
+## Box mode
+
+For scanning into a box (for example a 3D-printed box the cards slide into) with the phone fixed above it.
+
+1. Fix the phone so the empty box is in the middle of the picture.
+2. Tap **Calibrate box**. The page takes a picture of the empty box and learns its colour and where it is (shown as a thin dotted outline). The calibration is remembered; tap **Recalibrate box** if the phone or the box moves, and **Box mode off** to go back to hand-held scanning.
+3. Slide cards in. The card is found as the part of the box area that isn't box colour, so the outline follows the stack as it grows towards the camera. Capture starts about 0.3 s after a new card stops moving (hand-held: about 0.6–0.8 s).
+4. When the stack reaches the edge of the picture, the page says so: empty the box.
+
+A brightly coloured, matte box works best (green or magenta); black, white, grey, gold and silver are too close to card borders. If the box is greyish, calibration warns.
+
 ## Card index (on the device)
 
 Lookups run on the phone from a compact list of every printing; Scryfall is asked only when the list can't answer.

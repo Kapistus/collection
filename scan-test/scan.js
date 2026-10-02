@@ -4,7 +4,7 @@
    -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.02-14";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.02-15";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -75,7 +75,7 @@ let motion = null, lastEvent = "";
 function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
-  el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` +
+  el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` + (boxActive() ? " · Box mode" : "") +
     (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : choosing ? "paused until you choose the printing or skip" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
@@ -186,7 +186,8 @@ function frameToCard(f) {
 /** Track the card across frames: smooth small changes, jump to a new position only when it's seen twice. */
 let pending = null;
 function updateCard() {
-  const r = detectCard();
+  const r = boxActive() ? detectBoxCard() : detectCard();
+  boxFull = !!r?.full;
   if (!r) { if (++detMiss > 3) { cardRect = null; cardAlt = null; detCov = 0; } return; }
   detMiss = 0; detCov = r.cov; cardAlt = r.alt; cardIsFrame = r.frame;
   const close = (a, b) => a && Math.abs(a.x - b.x) < b.w * 0.08 && Math.abs(a.y - b.y) < b.h * 0.08 && Math.abs(a.w - b.w) < b.w * 0.08;
@@ -206,13 +207,109 @@ function drawOverlay() {
       <text x="${z === ZONES.name ? x + 3 : x + w + 6}" y="${z === ZONES.name ? y + h + 13 : y + h / 2 + 4}" fill="#fff" font-size="12" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${z.label}</text>`; };
   const label = (t, y) => `<text x="${W / 2}" y="${y}" text-anchor="middle" fill="#fff" font-size="14" font-family="system-ui" style="paint-order:stroke" stroke="#000" stroke-width="3">${t}</text>`;
   const small = source === "video" && cardRect && cardRect.h < MIN_CARD_PX;
+  const inBox = boxActive(), R = inBox ? toStage({ x: boxCal.region.x * video.videoWidth, y: boxCal.region.y * video.videoHeight, w: boxCal.region.w * video.videoWidth, h: boxCal.region.h * video.videoHeight }) : null;
   overlay.setAttribute("viewBox", `0 0 ${W} ${H}`);
   overlay.innerHTML = `<path d="M0,0H${W}V${H}H0Z ${rr(o.x, o.y, o.w, o.h, r)}" fill="rgba(0,0,0,${found ? .5 : .3})" fill-rule="evenodd"/>
     <path d="${rr(o.x, o.y, o.w, o.h, r)}" fill="none" stroke="#fff" stroke-width="${found ? 3 : 2}" ${found ? "" : 'stroke-dasharray="10 8" opacity=".8"'}/>` +
-    (found ? zone(ZONES.name) + zone(ZONES.set) : label("Hold a card in front of the camera", o.y + o.h / 2)) +
-    (small ? label("Move the card closer", Math.min(H - 10, o.y + o.h + 20)) : "");
+    (R ? `<rect x="${R.x}" y="${R.y}" width="${R.w}" height="${R.h}" fill="none" stroke="#5fd" stroke-width="1.5" stroke-dasharray="3 5"/>` : "") +
+    (found ? zone(ZONES.name) + zone(ZONES.set) : label(inBox ? "Slide a card into the box" : "Hold a card in front of the camera", o.y + o.h / 2)) +
+    (small ? label(inBox ? "Card too small: move the phone closer and recalibrate" : "Move the card closer", Math.min(H - 10, o.y + o.h + 20)) : "") +
+    (inBox && boxFull ? label("The stack reaches the edge of the picture: empty the box", 20) : "");
 }
 new ResizeObserver(drawOverlay).observe(stage);
+
+// ------------------------------------------------------------------ box mode
+/* For scanning into a box with the phone held still above it. "Calibrate box" takes a picture of the empty box and
+   learns its colour and where it is in the picture. After that the card is found as the part of the box area that
+   isn't box colour (the box's inner walls frame it), which keeps working as the stack of cards grows towards the
+   camera, and capture happens sooner because the picture is steadier. */
+let boxCal = null;
+try { boxCal = JSON.parse(localStorage.getItem("scanBox") || "null"); } catch {}
+const boxActive = () => !!boxCal && source === "video" && boxCal.vw === video.videoWidth && boxCal.vh === video.videoHeight;
+/** The camera picture shrunk to 320 px wide, as RGBA. */
+function grabSmall() {
+  const [sw, sh] = srcSize(), W = DET_W, H = Math.max(40, Math.round(DET_W * sh / sw));
+  const cv = grabSmall.cv || (grabSmall.cv = document.createElement("canvas"));
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(srcEl(), 0, 0, W, H);
+  return { W, H, d: g.getImageData(0, 0, W, H).data };
+}
+/** Colour without brightness (r, g, b shares), so shading on the box's walls doesn't change it. */
+const chromaDist = (d, i, c) => { const s = d[i] + d[i + 1] + d[i + 2] + 1; return Math.abs(d[i] / s - c[0]) + Math.abs(d[i + 1] / s - c[1]) + Math.abs(d[i + 2] / s - c[2]); };
+const brightness = (d, i) => (d[i] + d[i + 1] + d[i + 2]) / 3;
+function calibrateBox() {
+  if (source !== "video" || !video.videoWidth) { status("Start the camera first, with the empty box in view.", "warn"); return; }
+  const { W, H, d } = grabSmall(), med = a => a.sort((p, q) => p - q)[Math.floor(a.length / 2)];
+  // the box colour: the middle of the picture, where the empty box should be
+  const rs = [], gs = [], bs = [], ys = [];
+  for (let y = Math.round(H * 0.3); y < H * 0.7; y++) for (let x = Math.round(W * 0.3); x < W * 0.7; x++) {
+    const i = (y * W + x) * 4, s = d[i] + d[i + 1] + d[i + 2] + 1; if (s / 3 < 30) continue;
+    rs.push(d[i] / s); gs.push(d[i + 1] / s); bs.push(d[i + 2] / s); ys.push(s / 3);
+  }
+  if (rs.length < 100) { status("The middle of the picture is too dark to calibrate. Add light and try again.", "bad"); return; }
+  const c = [med(rs), med(gs), med(bs)], grey = Math.max(...c) - Math.min(...c) < 0.08, yMed = med(ys);
+  const dists = []; for (let k = 0; k < rs.length; k++) dists.push(Math.abs(rs[k] - c[0]) + Math.abs(gs[k] - c[1]) + Math.abs(bs[k] - c[2]));
+  const tol = Math.max(0.07, med(dists.slice()) * 4);
+  // the box: the box-coloured area connected to the middle of the picture
+  const isBox = i => brightness(d, i) > Math.min(35, yMed * 0.3) && chromaDist(d, i, c) < tol;
+  const seen = new Uint8Array(W * H), stack = [(Math.round(H / 2)) * W + Math.round(W / 2)];
+  let x0 = W, y0 = H, x1 = 0, y1 = 0, n = 0;
+  while (stack.length) {
+    const p = stack.pop(); if (seen[p]) continue; seen[p] = 1;
+    if (!isBox(p * 4)) continue;
+    const x = p % W, y = (p - x) / W; n++;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (x > 0) stack.push(p - 1); if (x < W - 1) stack.push(p + 1); if (y > 0) stack.push(p - W); if (y < H - 1) stack.push(p + W);
+  }
+  if (n < W * H * 0.05) { status("Couldn't find the box in the middle of the picture. Centre the empty box and try again.", "bad"); return; }
+  boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, at: Date.now() };
+  try { localStorage.setItem("scanBox", JSON.stringify(boxCal)); } catch {}
+  cardRect = cardAlt = null; prev = null; stillFor = 0; armed = true; renderBox(); drawOverlay();
+  status(grey ? "Box calibrated. Its colour is close to grey, so a brightly coloured box would work more reliably." : "Box calibrated. Slide a card in.", grey ? "warn" : "ok");
+}
+/** The card in box mode: the block of non-box-coloured pixels inside the box area. */
+function detectBoxCard() {
+  const { W, H, d } = grabSmall(), R = boxCal.region;
+  const rx0 = Math.max(0, Math.floor((R.x - 0.02) * W)), rx1 = Math.min(W - 1, Math.ceil((R.x + R.w + 0.02) * W));
+  const ry0 = Math.max(0, Math.floor((R.y - 0.02) * H)), ry1 = Math.min(H - 1, Math.ceil((R.y + R.h + 0.02) * H));
+  const dark = Math.min(35, boxCal.yMed * 0.3), rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
+  const card = new Uint8Array(rw * rh);
+  for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+    const i = ((y + ry0) * W + x + rx0) * 4;
+    card[y * rw + x] = brightness(d, i) <= dark || chromaDist(d, i, boxCal.c) >= boxCal.tol ? 1 : 0;
+  }
+  const run = (vals, thr) => {                        // longest run above thr, allowing 2-pixel gaps
+    let best = null, start = -1, gap = 0;
+    for (let k = 0; k <= vals.length; k++) {
+      if (k < vals.length && vals[k] > thr) { if (start < 0) start = k; gap = 0; }
+      else if (start >= 0 && (++gap > 2 || k === vals.length)) { const e = k - gap; if (!best || e - start > best[1] - best[0]) best = [start, e]; start = -1; gap = 0; }
+    }
+    return best;
+  };
+  const rows = []; for (let y = 0; y < rh; y++) { let s = 0; for (let x = 0; x < rw; x++) s += card[y * rw + x]; rows.push(s / rw); }
+  const ry = run(rows, 0.4); if (!ry || ry[1] - ry[0] < rh * 0.2) return null;
+  const cols = []; for (let x = 0; x < rw; x++) { let s = 0; for (let y = ry[0]; y <= ry[1]; y++) s += card[y * rw + x]; cols.push(s / (ry[1] - ry[0] + 1)); }
+  const rx = run(cols, 0.5); if (!rx) return null;
+  const w = rx[1] - rx[0] + 1, h = ry[1] - ry[0] + 1;
+  if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.18) return null;   // not card-shaped (a hand, or the card is still sliding)
+  let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) for (let x = rx[0]; x <= rx[1]; x++) fill += card[y * rw + x];
+  fill /= w * h; if (fill < 0.75) return null;
+  const k = srcSize()[0] / W;
+  return { x: (rx[0] + rx0) * k, y: (ry[0] + ry0) * k, w: w * k, h: h * k, cov: fill, frame: false, alt: null,
+    full: rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2 };
+}
+let boxFull = false;
+function renderBox() {
+  const on = boxActive();
+  $("#boxOff").hidden = !boxCal;
+  $("#calib").textContent = boxCal ? "Recalibrate box" : "Calibrate box";
+  $("#boxNote").textContent = !boxCal ? "" : on ? `Box mode on (calibrated ${new Date(boxCal.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`
+    : source === "video" ? "Box calibrated with another camera or resolution: recalibrate" : "Box mode on";
+}
+$("#calib").onclick = () => calibrateBox();
+renderBox();
+$("#boxOff").onclick = () => { boxCal = null; try { localStorage.removeItem("scanBox"); } catch {} cardRect = cardAlt = null; renderBox(); drawOverlay(); status("Box mode off."); };
 
 // ------------------------------------------------------------------ image processing
 const srcEl = () => video;
@@ -810,7 +907,8 @@ async function startCamera(deviceId) {
   sel.value = track.getSettings().deviceId || ""; sel.hidden = cams.length < 2;
   $("#startCam").hidden = true; $("#stopCam").hidden = false; $("#capture").disabled = false;
   cardRect = null; pending = null; drawOverlay(); armed = true; prev = null; stillFor = 0;
-  status("Hold a card in front of the camera.");
+  renderBox();
+  status(boxActive() ? "Box mode: slide a card into the box." : "Hold a card in front of the camera.");
   getWorkers().then(() => status("Ready. Hold a card in front of the camera.")).catch(e => status("Text reader failed to load: " + e.message, "bad"));
 }
 function stopCamera() {
@@ -883,13 +981,15 @@ $("#camDetails").onclick = () => {
 const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
 const STILL = 12;                                 // average brightness change per pixel (0–255) that still counts as "not moving"
 let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0;
-setInterval(() => {
+// box mode: the phone and the box don't move, so check more often and need a shorter still moment (~0.25 s instead of ~0.6 s)
+const tick = () => setTimeout(() => { try { step(); } finally { tick(); } }, boxActive() ? 120 : 200);
+function step() {
   if (source !== "video" || !video.videoWidth) return;
   if (!busy) updateCard();
   drawOverlay();
   if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
     prev = null; stillFor = 0; motion = null; diag();
-    if (++goneFor >= 5 && !armed) { armed = true; status("Hold a card in front of the camera."); }
+    if (++goneFor >= (boxActive() ? 8 : 5) && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
     return;
   }
   goneFor = 0;
@@ -902,6 +1002,7 @@ setInterval(() => {
   }
   if (cardRect.h < MIN_CARD_PX || detMiss > 0) { stillFor = 0; return; }   // too far away, or not seen in this frame   // too far away to read: the overlay says "Move the card closer"
   stillFor = motion !== null && motion < STILL ? stillFor + 1 : 0;
-  if (stillFor >= 3) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
-}, 200);
+  if (stillFor >= (boxActive() ? 2 : 3)) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
+}
+tick();
 
