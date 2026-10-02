@@ -430,7 +430,7 @@ async function startCamera(deviceId) {
   stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   const track = stream.getVideoTracks()[0], caps = track.getCapabilities?.() || {};
   $("#camInfo").textContent = `Camera: ${video.videoWidth}×${video.videoHeight}.`;
-  $("#torch").hidden = !caps.torch; $("#torch").dataset.on = "";
+  setupCamControls(track);
   const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
   const sel = $("#camSelect"); sel.innerHTML = cams.map((c, i) => `<option value="${esc(c.deviceId)}">${esc(c.label || "Camera " + (i + 1))}</option>`).join("");
   sel.value = track.getSettings().deviceId || ""; sel.hidden = cams.length < 2;
@@ -442,17 +442,55 @@ async function startCamera(deviceId) {
 function stopCamera() {
   stream?.getTracks().forEach(t => t.stop()); stream = null;
   if (source === "video") { source = null; video.hidden = true; $("#placeholder").hidden = false; drawOverlay(); }
-  $("#startCam").hidden = false; $("#stopCam").hidden = true; $("#torch").hidden = true; $("#capture").disabled = !source;
+  $("#startCam").hidden = false; $("#stopCam").hidden = true; $("#camControls").hidden = true; $("#capture").disabled = !source;
 }
 $("#startCam").onclick = () => startCamera();
 $("#stopCam").onclick = () => { stopCamera(); status(""); };
 $("#camSelect").onchange = e => startCamera(e.target.value);
+/* Flashlight, focus and zoom: only what the browser and camera allow (mostly Chrome on Android; some webcams in desktop Chrome).
+   Unsupported controls are greyed out with a note, so it's clear it's the device, not the page. */
+async function setTrack(c) {
+  const track = stream?.getVideoTracks()[0]; if (!track) return false;
+  try { await track.applyConstraints({ advanced: [c] }); return true; } catch (e) { status("The camera refused: " + (e.message || e.name), "warn"); return false; }
+}
+function setupCamControls(track) {
+  const caps = track.getCapabilities?.() || {}, set = track.getSettings?.() || {}, missing = [];
+  $("#camControls").hidden = false;
+  // flashlight
+  const torch = $("#torch"); torch.disabled = !caps.torch; torch.dataset.on = ""; torch.textContent = "Flashlight";
+  if (!caps.torch) missing.push("flashlight");
+  // focus
+  const fd = caps.focusDistance, canFocus = !!(fd && fd.max > fd.min && (caps.focusMode || []).includes("manual"));
+  const f = $("#focus"), af = $("#autoFocus");
+  af.disabled = !canFocus; af.checked = true; f.disabled = true;
+  if (canFocus) {
+    f.min = fd.min; f.max = fd.max; f.step = fd.step || (fd.max - fd.min) / 100;
+    f.value = set.focusDistance ?? (fd.min + fd.max) / 2; showFocus();
+  } else { $("#focusVal").textContent = ""; missing.push("focus"); }
+  // zoom
+  const z = caps.zoom, zr = $("#zoom"), canZoom = !!(z && z.max > z.min);
+  zr.disabled = !canZoom;
+  if (canZoom) { zr.min = z.min; zr.max = z.max; zr.step = z.step || 0.1; zr.value = set.zoom ?? z.min; $("#zoomVal").textContent = `${(+zr.value).toFixed(1)}×`; }
+  else { $("#zoomVal").textContent = ""; missing.push("zoom"); }
+  $("#ctlNote").textContent = missing.length ? `Not adjustable with this camera and browser: ${missing.join(", ")}.` : "";
+}
+function showFocus() { const v = +$("#focus").value; $("#focusVal").textContent = v >= 1 ? `${v.toFixed(2)} m` : `${Math.round(v * 100)} cm`; }
 $("#torch").onclick = async () => {
-  const track = stream?.getVideoTracks()[0]; if (!track) return;
   const on = !$("#torch").dataset.on;
-  try { await track.applyConstraints({ advanced: [{ torch: on }] }); $("#torch").dataset.on = on ? "1" : ""; $("#torch").textContent = on ? "Flashlight off" : "Flashlight"; }
-  catch { status("This camera's flashlight can't be controlled from the browser.", "warn"); }
+  if (await setTrack({ torch: on })) { $("#torch").dataset.on = on ? "1" : ""; $("#torch").textContent = on ? "Flashlight off" : "Flashlight"; }
 };
+$("#autoFocus").onchange = async () => {
+  const auto = $("#autoFocus").checked; $("#focus").disabled = auto;
+  const modes = stream?.getVideoTracks()[0]?.getCapabilities?.().focusMode || [];
+  if (auto) await setTrack({ focusMode: modes.includes("continuous") ? "continuous" : "single-shot" });
+  else await setTrack({ focusMode: "manual", focusDistance: +$("#focus").value });
+};
+let focusTimer = 0;
+$("#focus").oninput = () => { showFocus(); clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => setTrack({ focusMode: "manual", focusDistance: +$("#focus").value }), 60); };
+let zoomTimer = 0;
+$("#zoom").oninput = () => { $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(() => setTrack({ zoom: +$("#zoom").value }), 60); };
 $("#capture").onclick = () => scan("manual");
 
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan

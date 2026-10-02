@@ -23,7 +23,8 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 - The camera only works over HTTPS (GitHub Pages) or on localhost.
 - The text reader loads about 9 MB the first time; the browser keeps the language data afterwards.
-- **Flashlight** appears only when the browser can control it (usually Android Chrome).
+- **Flashlight, focus and zoom** controls appear under the buttons. They work only where the browser and camera allow it: mostly Chrome on Android, and some webcams in desktop Chrome. iPhone Safari and Firefox don't offer them. Unsupported controls are greyed out with a note.
+  - **Focus:** untick **Auto focus** and drag the slider; the value is the focus distance (about 10–15 cm for a card held close).
 - Foil can't be seen reliably in a photo.
 
 ## Deploying
