@@ -6,7 +6,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 1. The page looks for the card in every camera frame (about 5 times a second) and draws a white outline around it, so you can hold the card anywhere and at any distance. A dashed outline means no card is found yet. If the card is too small in the picture to read, it says **Move the card closer**.
    - Finding the card: the picture is shrunk to 320 px wide, edges are found, and the rectangle with a card's proportions whose four sides are covered by straight, consistent edges wins. It works for a card held roughly upright (up to about 5° tilt).
-   - A black-bordered card on a dark table may be outlined at its inner frame instead of its outer edge.
+   - A black-bordered card on a dark background has no visible outer edge, so the coloured frame inside the border is found instead. When just outside the found rectangle is darker and more even than just inside it, the page treats it as the frame and adds the border (about 4.5% at the sides, 3% at the top and 8% at the bottom). If a read fails or only finds the name, the other interpretation is tried as well; **What was read** shows which one was used.
 2. **Mode** (remembered) decides which frame is read once the card has been found and still for about half a second:
    - **1: first still frame** reads that frame right away. Fastest.
    - **2: sharpest of 6 frames** looks at about 6 frames over 0.7 s and reads the sharpest (measured on the name and set areas). Helps when autofocus is still settling. The log has a Mode column and keeps separate statistics for each mode, so they can be compared.

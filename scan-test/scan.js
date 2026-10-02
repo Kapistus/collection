@@ -65,7 +65,7 @@ function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : source ? "photo" : "off";
   el.textContent = `Text reader: ${readerState} · Camera: ${cam}` +
-    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%)` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
+    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
 addEventListener("error", e => { status("Error: " + e.message, "bad"); lastEvent = "error"; diag(); });
@@ -104,7 +104,7 @@ function cardRectInSource() {
    become candidate card sides, and the rectangle with a card's proportions whose sides are best covered by edges wins.
    Works for a card held roughly upright (up to about 5° tilt), at any distance and position. */
 const DET_W = 320;
-let cardRect = null, detMiss = 0, detCov = 0;
+let cardRect = null, detMiss = 0, detCov = 0, cardAlt = null, cardIsFrame = false;
 function detectCard() {
   const [sw, sh] = srcSize(); if (!sw || !sh) return null;
   const W = DET_W, H = Math.max(40, Math.round(DET_W * sh / sw));
@@ -155,14 +155,34 @@ function detectCard() {
   const top = Math.max(...cands.map(c => c.cov));
   const best = cands.filter(c => c.cov >= top - 0.08).sort((p, q) => q.area - p.area)[0];   // the outer edge, not the inner frame
   const k = sw / W;
-  return { x: best.L * k, y: best.T * k, w: (best.R - best.L) * k, h: (best.B - best.T) * k, cov: best.cov };
+  const found = { x: best.L * k, y: best.T * k, w: (best.R - best.L) * k, h: (best.B - best.T) * k };
+  // Outer edge or coloured frame? A black-bordered card on a dark background shows no outer edge, and the coloured
+  // frame inside the border has almost a card's proportions. If just outside the rectangle is darker and more even
+  // than just inside it, the rectangle is the frame: the card is the frame plus the black border.
+  const stats = (x0, x1, y0, y1) => { let n = 0, s = 0, s2 = 0;
+    for (let y = Math.max(0, y0); y <= Math.min(H - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(W - 1, x1); x++) { const v = gray[y * W + x]; n++; s += v; s2 += v * v; }
+    return n ? { n, mean: s / n, std: Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2)) } : { n: 0, mean: 0, std: 0 }; };
+  const bw = Math.max(2, Math.round((best.R - best.L) * 0.035)), y0 = best.T + bw, y1 = best.B - bw;
+  const merge = (a, b) => { const n = a.n + b.n; return n ? { n, mean: (a.mean * a.n + b.mean * b.n) / n, std: (a.std * a.n + b.std * b.n) / n } : a; };
+  const inside = merge(stats(best.L + 1, best.L + bw, y0, y1), stats(best.R - bw, best.R - 1, y0, y1));
+  const outside = merge(stats(best.L - bw, best.L - 1, y0, y1), stats(best.R + 1, best.R + bw, y0, y1));
+  const isFrame = outside.n > 0 && outside.mean < 70 && outside.mean < inside.mean - 25 && outside.std < 22;
+  const card = frameToCard(found);
+  return isFrame ? { ...card, cov: best.cov, frame: true, alt: found } : { ...found, cov: best.cov, frame: false, alt: card };
+}
+/** The whole card from its coloured frame (modern frame: border about 4.5% of the width at the sides,
+    3% of the height at the top and 8% at the bottom, where the set and number line is). */
+const FRAME = { side: 0.045, top: 0.032, bottom: 0.079 };
+function frameToCard(f) {
+  const w = f.w / (1 - 2 * FRAME.side), h = f.h / (1 - FRAME.top - FRAME.bottom);
+  return { x: f.x - FRAME.side * w, y: f.y - FRAME.top * h, w, h };
 }
 /** Track the card across frames: smooth small changes, jump to a new position only when it's seen twice. */
 let pending = null;
 function updateCard() {
   const r = detectCard();
-  if (!r) { if (++detMiss > 3) { cardRect = null; detCov = 0; } return; }
-  detMiss = 0; detCov = r.cov;
+  if (!r) { if (++detMiss > 3) { cardRect = null; cardAlt = null; detCov = 0; } return; }
+  detMiss = 0; detCov = r.cov; cardAlt = r.alt; cardIsFrame = r.frame;
   const close = (a, b) => a && Math.abs(a.x - b.x) < b.w * 0.08 && Math.abs(a.y - b.y) < b.h * 0.08 && Math.abs(a.w - b.w) < b.w * 0.08;
   if (close(cardRect, r)) { const m = 0.5; cardRect = { x: cardRect.x + (r.x - cardRect.x) * m, y: cardRect.y + (r.y - cardRect.y) * m, w: cardRect.w + (r.w - cardRect.w) * m, h: cardRect.h + (r.h - cardRect.h) * m }; }
   else if (close(pending, r) || !cardRect) { cardRect = { x: r.x, y: r.y, w: r.w, h: r.h }; pending = null; }
@@ -310,12 +330,15 @@ async function identify(name, info) {
 // ------------------------------------------------------------------ one scan
 /** Copy of the card area of the current frame, so reading isn't affected by the picture changing. */
 function snapshotCard() {
-  const [sw, sh] = srcSize(), r = cardRectInSource();
-  const x = Math.max(0, Math.floor(r.x)), y = Math.max(0, Math.floor(r.y));
-  const w = Math.max(1, Math.min(sw, Math.ceil(r.x + r.w)) - x), h = Math.max(1, Math.min(sh, Math.ceil(r.y + r.h)) - y);
+  const [sw, sh] = srcSize(), r = cardRectInSource(), a = source !== "photoCard" && cardRect && cardAlt ? cardAlt : null;
+  const ux0 = Math.min(r.x, a ? a.x : r.x), uy0 = Math.min(r.y, a ? a.y : r.y);
+  const ux1 = Math.max(r.x + r.w, a ? a.x + a.w : 0), uy1 = Math.max(r.y + r.h, a ? a.y + a.h : 0);
+  const x = Math.max(0, Math.floor(ux0)), y = Math.max(0, Math.floor(uy0));
+  const w = Math.max(1, Math.min(sw, Math.ceil(ux1)) - x), h = Math.max(1, Math.min(sh, Math.ceil(uy1)) - y);
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
   cv.getContext("2d").drawImage(srcEl(), x, y, w, h, 0, 0, w, h);
-  return { cv, rect: { x: r.x - x, y: r.y - y, w: r.w, h: r.h } };
+  const rel = q => ({ x: q.x - x, y: q.y - y, w: q.w, h: q.h });
+  return { cv, rect: rel(r), alt: a ? rel(a) : null, frame: cardIsFrame };
 }
 /** Sharpness of the two read areas: variance of the Laplacian (higher = sharper edges). */
 function sharpness(snap) {
@@ -365,18 +388,31 @@ async function scan(trigger = "auto") {
     if (useMode === 2) status("Picking the sharpest frame…");
     const snap = useMode === 2 ? await sharpestSnapshot() : Object.assign(snapshotCard(), {});
     snap.sharp ??= sharpness(snap);
-    const cn = zoneCanvas(ZONES.name, snap.cv, snap.rect), cs = zoneCanvas(ZONES.set, snap.cv, snap.rect);
+    const cn = zoneCanvas(ZONES.name, snap.cv, snap.rect), cs = zoneCanvas(ZONES.set, snap.cv, snap.rect);   // read areas on the card
     if (!workers) status("Waiting for the text reader to load…");
     const w = await getWorkers();
     status("Reading…");
-    const [rn, rs, codes] = await Promise.all([w.name.recognize(cn), w.set.recognize(cs), loadSets()]);
+    let [rn, rs, codes] = await Promise.all([w.name.recognize(cn), w.set.recognize(cs), loadSets()]);
+    let name = cleanName(rn.data.text), info = parseSetLine(rs.data.text, codes), crops = [cn, cs], used = snap.frame ? "frame + border" : "outer edge";
+    let res = null;
+    if (name || info.num) { status("Looking up on Scryfall…"); res = await identify(name, info); }
+    const rank = r => !r ? -1 : r.card ? 2 : r.how === "choose" ? 1 : 0;
+    if (rank(res) < 2 && snap.alt) {
+      // try the other reading of the outline: the card's outer edge vs its coloured frame
+      const cn2 = zoneCanvas(ZONES.name, snap.cv, snap.alt), cs2 = zoneCanvas(ZONES.set, snap.cv, snap.alt);
+      const [rn2, rs2] = await Promise.all([w.name.recognize(cn2), w.set.recognize(cs2)]);
+      const name2 = cleanName(rn2.data.text), info2 = parseSetLine(rs2.data.text, codes);
+      const res2 = name2 || info2.num ? await identify(name2, info2) : null;
+      if (rank(res2) > rank(res)) {
+        [rn, rs, name, info, res, crops] = [rn2, rs2, name2, info2, res2, [cn2, cs2]];
+        used = snap.frame ? "outer edge (second try)" : "frame + border (second try)";
+      }
+    }
     const t1 = performance.now();
-    const name = cleanName(rn.data.text), info = parseSetLine(rs.data.text, codes);
     if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
-    status("Looking up on Scryfall…");
-    const res = await identify(name, info);
+    res ||= { card: null, how: "fail" };
     const t2 = performance.now();
-    current = { name, info, res, raw: { name: rn.data, set: rs.data }, crops: [cn, cs], ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp };
+    current = { name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used };
     if (res.card) addLog(res.card, res.how, t2 - t0);
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
@@ -401,7 +437,7 @@ function renderResult() {
   $("#result").innerHTML = card
     ? `<div class="result"><img src="${esc(img(card))}" alt=""><div><div class="name">${esc(card.printed_name || card.name)}</div>
         <div>${esc(card.set_name)} · ${esc(card.set.toUpperCase())} #${esc(card.collector_number)}${card.lang !== "en" ? " · " + esc(card.lang.toUpperCase()) : ""}</div>
-        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · read ${Math.round(c.ms.read)} ms · lookup ${Math.round(c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}</p></div></div>`
+        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   if (c.res.prints && !card) {
@@ -415,7 +451,7 @@ function renderResult() {
     div.innerHTML = `<b>${label}</b> <span class="hint">confidence ${Math.round(r.confidence)}%</span><br>`;
     div.append(cv); div.insertAdjacentHTML("beforeend", `<br><code>${esc(r.text.trim() || "(nothing)")}</code>`); $("#crops").append(div);
   });
-  $("#crops").insertAdjacentHTML("beforeend", `<code>Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")} · Language: ${esc(c.info.lang || "–")}</code>`);
+  $("#crops").insertAdjacentHTML("beforeend", `<code>Card edge: ${esc(c.used || "–")} · Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")} · Language: ${esc(c.info.lang || "–")}</code>`);
 }
 $("#picker").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-id]"); if (!b || !current?.res.prints) return;
@@ -601,9 +637,10 @@ $("#photo").onchange = async () => {
   stage.style.aspectRatio = `${still.naturalWidth} / ${still.naturalHeight}`;
   video.hidden = true; still.hidden = false; $("#placeholder").hidden = true; $("#capture").disabled = false;
   await new Promise(r => requestAnimationFrame(r));
-  cardRect = detectCard();                          // find the card in the photo first
+  const det = detectCard();                         // find the card in the photo first
+  cardRect = det && { x: det.x, y: det.y, w: det.w, h: det.h }; cardAlt = det?.alt || null; cardIsFrame = !!det?.frame;
   const cardShaped = Math.abs(a - CARD_RATIO) / CARD_RATIO < 0.12;
-  if (cardRect && cardShaped && cardRect.w > still.naturalWidth * 0.85) cardRect = null;   // that's the frame inside a cropped card
+  if (cardRect && cardShaped && cardRect.w > still.naturalWidth * 0.85) { cardRect = cardAlt = null; cardIsFrame = false; }   // that's the frame inside a cropped card
   if (!cardRect && cardShaped) {                    // a photo of just the card
     source = "photoCard"; still.style.objectFit = "contain"; stage.style.aspectRatio = "16 / 9";
     await new Promise(r => requestAnimationFrame(r));
