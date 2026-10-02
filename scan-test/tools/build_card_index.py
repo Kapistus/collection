@@ -9,6 +9,8 @@ Usage:
   python3 build_card_index.py                       # download from Scryfall (needs internet)
   python3 build_card_index.py --input cards.json --sets-input sets.json   # offline, from saved files
 
+Scryfall's bulk file may be one JSON list or JSON Lines (one card per line, .jsonl), plain or gzip-compressed; all work.
+
 Line formats in cards.txt.gz (fields separated by "|"):
   #sets
   code|name|released (YYYY-MM-DD)
@@ -84,12 +86,22 @@ def open_json(path):
 
 
 def iter_cards(path):
+    """Card objects from the bulk file: either one JSON list ("[{…},{…}]") or JSON Lines (one card object per line)."""
     f = open_json(path)
     try:
-        import ijson  # streams the array: ~500 MB of JSON without loading it all
-        yield from ijson.items(f, "item", use_float=True)
-    except ImportError:
-        yield from json.load(f)
+        head = f.peek(64) if hasattr(f, "peek") else b""
+        first = head.lstrip()[:1]
+        if first == b"{":                                   # JSON Lines
+            for line in f:
+                line = line.strip().rstrip(b",")
+                if line and line not in (b"[", b"]"):
+                    yield json.loads(line)
+            return
+        try:
+            import ijson  # streams a big JSON list with little memory
+            yield from ijson.items(f, "item", use_float=True)
+        except ImportError:
+            yield from json.load(f)
     finally:
         f.close()
 
@@ -116,7 +128,8 @@ def main():
         meta = bulk_entry("default_cards")
         source_updated = meta.get("updated_at", "")
         tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
-        print(f"Downloading {meta['download_uri']} ({meta.get('size', 0) / 1e6:.0f} MB)…", flush=True)
+        size = meta.get("size") or meta.get("compressed_size") or 0
+        print(f"Downloading {meta['download_uri']}" + (f" ({size / 1e6:.0f} MB)" if size else "") + "…", flush=True)
         fetch(meta["download_uri"], tmp)
         cards_path = tmp
     sets_json = json.load(open_json(a.sets_input)) if a.sets_input else json.loads(fetch(API + "/sets"))
