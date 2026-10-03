@@ -16,10 +16,11 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
    - the **set · number** area: the bottom-most one or two lines, with the collector number, set code and language (printed on cards since about 2014).
    Before reading, each strip is cleaned up by comparing every pixel with its own surroundings, so glare, shadows, dim light and colour casts don't wash the letters out; if that reads poorly, the strip is tried again with a plain contrast stretch.
    The areas are big enough to contain the text whether the outline is on the card's outer edge or on its coloured frame. Mana symbols and the set symbol are pictures, not text, so they aren't used.
-3. It identifies the card on Scryfall:
-   - set code and number read → the exact printing (checked against the name);
-   - otherwise the name (fuzzy, so misread letters are fine), narrowed down by whatever set code or number was read;
-   - if several printings remain, you pick one from pictures (green = matches what was read).
+3. It identifies the card in the card index on the device (no Scryfall lookups while scanning):
+   - set code and number read → the exact printing (checked against the name; a rarity letter misread as a digit is allowed for);
+   - otherwise the closest real card name (misread letters are fine), narrowed down by whatever set code or number was read;
+   - if several printings remain, or the name was read only roughly, you pick or confirm from pictures (green = matches what was read);
+   - a set code the index doesn't know (a set newer than the index) is mentioned, and the printing isn't guessed.
 4. **What was read** shows the cut-out areas and the raw text, to see why a scan failed.
 5. The log counts automatic matches, chosen printings and failures, and can be copied as text (`1 Sol Ring (DSC) 94`).
 
@@ -50,12 +51,12 @@ A brightly coloured, matte box works best (green or magenta); black, white, grey
 
 ## Card index (on the device)
 
-Lookups run on the phone from a compact list of every printing; Scryfall is asked only when the list can't answer.
+All lookups run on the phone from a compact list of every printing. The scanner makes no Scryfall lookups; without the index it can't identify cards (it says so).
 
-- **Built on GitHub:** `.github/workflows/build-card-index.yml` runs `tools/build_card_index.py` every Monday (and on demand: Actions tab → *Build card index* → *Run workflow*, e.g. after a new set). It downloads Scryfall's *Default Cards* bulk file and writes `data/cards.txt.gz` (set, collector number, language, finishes, name and Scryfall id of every paper printing) and `data/version.json`, and commits them only when the cards changed. The workflow needs *Read and write permissions* (Settings → Actions → General → Workflow permissions).
+- **Built on GitHub:** `.github/workflows/build-card-index.yml` runs `tools/build_card_index.py` every day (and on demand: Actions tab → *Build card index* → *Run workflow*), so new sets appear within a day. It downloads Scryfall's *Default Cards* bulk file and writes `data/cards.txt.gz` (set, collector number, language, finishes, name and Scryfall id of every paper printing) and `data/version.json`, and commits them only when the cards changed. The workflow needs *Read and write permissions* (Settings → Actions → General → Workflow permissions).
 - **Kept on the device:** the page checks `data/version.json` at start and downloads the index only when it's new, then keeps it in the browser's IndexedDB. The diagnostics line shows the index state and date.
-- **Lookup order:** set code + number on the device → name on the device (closest real card name, allowing misread letters, narrowed by set code or number) → Scryfall online. Scryfall is used when the index isn't there yet, when the set code read belongs to a set newer than the index, or when no name is close enough. The result says *found on the device* or *looked up online*, and the log marks online lookups.
-- Card images load straight from Scryfall's image server using the card's id.
+- **Lookup order:** set code + number → name (closest real card name, allowing misread letters, narrowed by set code or number). Typing a name (suggestions and search) also uses the index.
+- Card pictures load straight from Scryfall's image server using the card's id (that's the only thing loaded from Scryfall while scanning).
 - To build the index on your own computer instead: `pip install ijson`, then `python3 tools/build_card_index.py` (writes `data/`).
 
 ## Version

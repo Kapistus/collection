@@ -1,10 +1,11 @@
 "use strict";
 /* Card Scanner Test: standalone page.
    Camera -> card found in the picture -> white outline -> read the name bar and the bottom-left set/number line with Tesseract.js
-   -> identify on Scryfall: set code + collector number first, otherwise the name and a list of printings to pick from. */
+   -> identify in the card index on the device: set code + collector number first, otherwise the name and a list of printings to pick from.
+   No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.02-15";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.03-1";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -20,35 +21,19 @@ const ZONES = {
   set:  { x: 0.02, y: 0.830, w: 0.62, h: 0.170, label: "set · number", px: 300 },
 };
 const LANGS = ["EN", "DE", "FR", "IT", "ES", "PT", "JA", "KO", "RU", "ZHS", "ZHT", "PH"];
-const API = "https://api.scryfall.com";
 const abs = p => new URL(p, location.href).href;
 
 const video = $("#video"), stage = $("#stage"), overlay = $("#overlay");
 let stream = null, source = null;                 // source: "video" while the camera runs
-let workers = null, busy = false, setCodes = null;
+let workers = null, busy = false;
 let log = [], current = null;
 
 // ------------------------------------------------------------------ status
 function status(msg, cls = "") { const s = $("#status"); s.textContent = msg; s.className = "status " + cls; }
 
-// ------------------------------------------------------------------ Scryfall (max ~10 requests per second)
-let lastReq = 0;
-async function sf(path) {
-  const wait = lastReq + 110 - Date.now(); if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  lastReq = Date.now();
-  const r = await fetch(API + path, { headers: { Accept: "application/json" } });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`Scryfall ${r.status}`);
-  return r.json();
-}
-async function loadSets() {
-  if (setCodes?.size) return setCodes;
-  if (IDX.data && !navigator.onLine) return new Set([...IDX.data.sets.keys()].map(c => c.toUpperCase()));
-  try { const d = await sf("/sets"); setCodes = new Set((d?.data || []).map(s => s.code.toUpperCase())); }
-  catch { setCodes = new Set(); }
-  if (IDX.data) for (const c of IDX.data.sets.keys()) setCodes.add(c.toUpperCase());
-  return setCodes;
-}
+/** Set codes the reader may find: the sets in the card index. */
+const indexSets = () => IDX.data ? new Set([...IDX.data.sets.keys()].map(c => c.toUpperCase())) : new Set();
+
 
 // ------------------------------------------------------------------ text reader
 let workersP = null, readerState = "not loaded";
@@ -398,20 +383,22 @@ function setVariants(tok) {
   for (let i = 0; i < tok.length; i++) if (CONFUSE[tok[i]]) out.add(tok.slice(0, i) + CONFUSE[tok[i]] + tok.slice(i + 1));
   return [...out];
 }
-/** Collector number, set code candidates (checked against Scryfall's set list) and language from the bottom-left line. */
+/** Collector number, set code candidates (checked against the sets in the card index) and language from the bottom-left line. */
 function parseSetLine(t, codes) {
   const text = t.toUpperCase().replace(/[•·*]/g, " • ");
   const num = (/(?:^|\s)0*(\d{1,4})(?:\s*\/\s*\d{1,4})?(?=\s|$)/m.exec(text) || [])[1] || "";
   const toks = text.split(/[^A-Z0-9]+/).filter(Boolean);
-  let lang = "", sets = [];
+  let lang = "", sets = [], unknown = "";
   for (let i = 0; i < toks.length; i++) {
     const tok = toks[i];
     if (LANGS.includes(tok) && i > 0) lang ||= tok.toLowerCase();
     if (tok.length < 3 || tok.length > 5 || /^\d+$/.test(tok)) continue;
     const followedByLang = LANGS.includes(toks[i + 1] || "");
-    for (const v of setVariants(tok)) if (codes.has(v)) { if (followedByLang) sets.unshift(v); else sets.push(v); break; }
+    const hit = setVariants(tok).find(v => codes.has(v));
+    if (hit) { if (followedByLang) sets.unshift(hit); else sets.push(hit); }
+    else if (followedByLang && /[A-Z]/.test(tok)) unknown ||= tok;        // looks like a set code, but not one in the card index
   }
-  return { num, sets: [...new Set(sets)].slice(0, 3), lang };
+  return { num, sets: [...new Set(sets)].slice(0, 3), lang, unknown: sets.length ? "" : unknown };
 }
 function similarity(a, b) {
   a = a.toLowerCase().replace(/[^a-z]/g, ""); b = b.toLowerCase().replace(/[^a-z]/g, "");
@@ -422,48 +409,6 @@ function similarity(a, b) {
   return 1 - d[m][n] / Math.max(m, n);
 }
 const namesOf = c => [c.name, c.printed_name, ...(c.card_faces || []).flatMap(f => [f.name, f.printed_name])].filter(Boolean);
-
-// ------------------------------------------------------------------ identifying the card
-async function fuzzy(name) {
-  const words = name.split(" ");
-  for (let k = words.length; k >= Math.max(1, words.length - 2); k--) {   // drop up to 2 trailing words (mana cost junk)
-    const q = words.slice(0, k).join(" "); if (q.length < 3) break;
-    const c = await sf("/cards/named?fuzzy=" + encodeURIComponent(q));
-    if (c) return c;
-  }
-  return null;
-}
-async function printsOf(card) {
-  const d = await sf(`/cards/search?q=${encodeURIComponent("oracleid:" + card.oracle_id)}&unique=prints&order=released&dir=desc`);
-  return d?.data?.length ? d.data : [card];
-}
-const stripZeros = cn => String(cn).replace(/^0+(?=\d)/, "");
-async function identify(names, info) {
-  const best = c => Math.max(0, ...names.flatMap(n => namesOf(c).map(x => similarity(n, x))));
-  // 1. set code + collector number = exact printing (checked against the name, when one was read)
-  if (info.num && info.sets.length) {
-    for (const code of info.sets) {
-      const path = `/cards/${code.toLowerCase()}/${info.num}` + (info.lang && info.lang !== "en" ? "/" + info.lang : "");
-      const c = await sf(path);
-      if (c && (!names.length || best(c) >= 0.55)) return { card: c, how: "set+number", nameUsed: names[0] };
-    }
-  }
-  // 2. the name (each candidate line, top first), then narrow the printings down with whatever else was read
-  for (const name of names) {
-    if (name.length < 3) continue;
-    const named = await fuzzy(name);
-    if (!named) continue;
-    const prints = await printsOf(named);
-    const bySet = info.sets.length ? prints.filter(p => info.sets.includes(p.set.toUpperCase())) : [];
-    const pool = bySet.length ? bySet : prints;
-    const byNum = info.num ? pool.filter(p => stripZeros(p.collector_number) === info.num) : [];
-    if (byNum.length === 1) return { card: byNum[0], how: bySet.length ? "name+set+number" : "name+number", nameUsed: name };
-    if (bySet.length === 1) return { card: bySet[0], how: "name+set", nameUsed: name };
-    if (prints.length === 1) return { card: prints[0], how: "name (one printing)", nameUsed: name };
-    return { card: null, how: "choose", named, prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)), nameUsed: name };
-  }
-  return { card: null, how: "fail" };
-}
 
 // ------------------------------------------------------------------ finding text lines in an area
 /** Horizontal bands of text in an area: rows with many light/dark changes along them (letters), between calmer rows.
@@ -543,7 +488,8 @@ async function readSet(w, snap, codes) {
 
 // ------------------------------------------------------------------ local card index
 /* A compact list of every printing (built from Scryfall's bulk data by tools/build_card_index.py, see data/version.json),
-   downloaded once and kept in the browser's IndexedDB. Lookups run on the device; Scryfall is asked only when the
+   downloaded once and kept in the browser's IndexedDB. All lookups run on the device; nothing is asked from Scryfall
+   while scanning (the
    index can't answer (not downloaded yet, a set newer than the index, or no good match). */
 const IDX = { state: "not loaded", data: null, version: null };
 function idbOpen() {
@@ -570,8 +516,8 @@ async function loadIndex() {
       text = head[0] === 0x1f && head[1] === 0x8b ? await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text() : await blob.text();
       v = ver;
       try { await idbSet("index", { sha: ver.sha, version: ver, text }); } catch {}   // can't store: use it for this visit only
-    } catch (e) { if (stored?.text) { text = stored.text; v = stored.version; } else { IDX.state = "download failed, using Scryfall online"; diag(); return; } }
-  } else { IDX.state = "not available, using Scryfall online"; diag(); return; }
+    } catch (e) { if (stored?.text) { text = stored.text; v = stored.version; } else { IDX.state = "download failed: cards can't be identified until it loads"; diag(); return; } }
+  } else { IDX.state = "not available: cards can't be identified until it loads"; diag(); return; }
   IDX.data = parseIndex(text); IDX.version = v;
   IDX.state = `${fmtN(IDX.data.n)} printings, ${(v?.source_updated || v?.built || "").slice(0, 10)}`; diag();
 }
@@ -635,19 +581,25 @@ function localName(line) {
   }
   return best && best.sim >= (best.len && best.len < 6 ? 0.75 : 0.7) ? best : null;
 }
-/** Identify on the device. Returns null when the index can't answer, so the caller asks Scryfall. */
+/** Identify in the card index. */
 function localIdentify(names, info) {
-  const D = IDX.data; if (!D) return null;
-  if (info.sets.some(c => ![...D.sets.keys()].includes(c.toLowerCase()))) return null;   // a set newer than the index: ask Scryfall
+  const D = IDX.data; if (!D) return { card: null, how: "fail", why: "noindex" };
   const lang = info.lang || "en";
-  const nameSim = i => Math.max(0, ...names.flatMap(n => [D.name[i], ...D.name[i].split(" // "), D.printed[i]].filter(Boolean).map(x => similarity(n, x))));
+  // how well a read name agrees with a real one: overall similarity, or (for a name partly hidden by glare) how much of
+  // what was read appears unbroken in the real name
+  const agree = (read, real) => {
+    const a = normName(read), b = normName(real); let best = 0;
+    for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) { let k = 0; while (a[i + k] && a[i + k] === b[j + k]) k++; if (k > best) best = k; }
+    return Math.max(similarity(read, real), a.length >= 5 ? 0.9 * best / a.length : 0);
+  };
+  const nameSim = i => Math.max(0, ...names.flatMap(n => [D.name[i], ...D.name[i].split(" // "), D.printed[i]].filter(Boolean).map(x => agree(n, x))));
+  // collector number as read, and without its last digit (the rarity letter is often misread as a digit: "0263 U" -> "02630")
+  const nums = info.num ? [...new Set([normCn(info.num), info.num.length >= 3 ? normCn(info.num.slice(0, -1)) : ""].filter(Boolean))] : [];
   // 1. set code + collector number
-  if (info.num && info.sets.length) {
-    for (const code of info.sets) {
-      const hits = D.bySetCn.get(`${code.toLowerCase()}|${normCn(info.num)}`) || [];
-      const i = hits.find(i => D.lang[i] === lang) ?? hits[0];
-      if (i != null && (!names.length || nameSim(i) >= 0.55)) return { card: printingOf(i), how: "set+number", nameUsed: names[0], src: "local" };
-    }
+  for (const code of info.sets) for (const num of nums) {
+    const hits = D.bySetCn.get(`${code.toLowerCase()}|${num}`) || [];
+    const i = hits.find(i => D.lang[i] === lang) ?? hits[0];
+    if (i != null && (!names.length || nameSim(i) >= 0.55)) return { card: printingOf(i), how: "set+number", nameUsed: names[0] };
   }
   // 2. the name, narrowed down by whatever set code or number was read
   for (const n of names) {
@@ -656,14 +608,16 @@ function localIdentify(names, info) {
     const prints = idx.map(printingOf);
     const bySet = info.sets.length ? prints.filter(p => info.sets.includes(p.set.toUpperCase())) : [];
     const pool = bySet.length ? bySet : prints;
-    const byNum = info.num ? pool.filter(p => normCn(p.collector_number) === normCn(info.num)) : [];
-    const r = { nameUsed: n, src: "local" };
+    const byNum = nums.length ? pool.filter(p => nums.includes(normCn(p.collector_number))) : [];
+    const r = { nameUsed: n };
     if (byNum.length === 1) return { ...r, card: byNum[0], how: bySet.length ? "name+set+number" : "name+number" };
     if (bySet.length === 1) return { ...r, card: bySet[0], how: "name+set" };
-    if (prints.length === 1) return { ...r, card: prints[0], how: "name (one printing)" };
-    return { ...r, card: null, how: "choose", named: prints[0], prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)) };
+    // only the name, and it's the card's only printing: accepted only when the name was read clearly, and the set code
+    // read (if any) is one the index knows; otherwise you confirm it
+    if (prints.length === 1 && !info.unknown && m.sim >= 0.85) return { ...r, card: prints[0], how: "name (one printing)" };
+    return { ...r, card: null, how: "choose", named: prints[0], prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)), unknown: info.unknown };
   }
-  return null;
+  return { card: null, how: "fail", unknown: info.unknown };
 }
 
 // ------------------------------------------------------------------ one scan
@@ -736,15 +690,12 @@ async function scan(trigger = "auto") {
     if (!workers) status("Waiting for the text reader to load…");
     const w = await getWorkers();
     status("Reading…");
-    const codes = await loadSets();
+    const codes = indexSets();
     const [nm, st] = await Promise.all([readName(w, snap), readSet(w, snap, codes)]);
     const names = nm.names, name = names[0] || "", info = st.info, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
     const used = snap.frame ? "frame + border" : "outer edge";
     let res = null;
-    if (names.length || info.num) {
-      res = localIdentify(names, info);                     // on the device first
-      if (!res) { status("Looking up on Scryfall…"); res = await identify(names, info); if (res) res.src = "online"; }
-    }
+    if (names.length || info.num) res = localIdentify(names, info);
     const t1 = performance.now();
     if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
     res ||= { card: null, how: "fail" };
@@ -753,7 +704,9 @@ async function scan(trigger = "auto") {
     if (res.card) { addLog(res.card, res.how, t2 - t0); blip(); }
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
-    status(res.card ? `Found: ${res.card.name}` : res.how === "choose" ? "Name found. Choose the printing you have (scanning is paused until you choose or skip)." : "Not recognised. Try again, or type the name.",
+    const newer = res.unknown ? ` The set code ${res.unknown} isn't in the card index (from ${(IDX.version?.source_updated || IDX.version?.built || "?").slice(0, 10)}): a newer set?` : "";
+    status(res.card ? `Found: ${res.card.name}` : res.how === "choose" ? "Name found. Choose the printing you have (scanning is paused until you choose or skip)." + newer
+      : res.why === "noindex" ? "The card index isn't loaded, so cards can't be identified yet. See the line below." : "Not recognised. Try again, or type the name." + newer,
       res.card ? "ok" : res.how === "choose" ? "warn" : "bad");
   } catch (err) {
     console.error(err); status("Error: " + err.message, "bad");
@@ -792,7 +745,7 @@ function renderResult() {
   $("#result").innerHTML = card
     ? `<div class="result"><img src="${esc(img(card))}" alt=""><div><div class="name">${esc(card.printed_name || card.name)}</div>
         <div>${esc(card.set_name)} · ${esc(card.set.toUpperCase())} #${esc(card.collector_number)}${card.lang !== "en" ? " · " + esc(card.lang.toUpperCase()) : ""}</div>
-        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}${c.res.src ? ` · ${c.res.src === "local" ? "found on the device" : "looked up online"}` : ""}</p></div></div>`
+        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   choosing = !pw.hidden;                            // automatic scanning pauses until a printing is chosen or skipped
@@ -825,16 +778,16 @@ $("#skipPick").onclick = () => {
 };
 function addLog(card, how, ms, what = "") {
   const m = current?.mode || (how === "typed" ? "–" : mode);
-  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m, src: current?.res?.src || "" });
+  log.unshift({ n: log.length + 1, name: card ? card.name : what, set: card ? card.set.toUpperCase() : "", cn: card ? card.collector_number : "", how, ms, mode: m });
   renderLog();
 }
 function renderLog() {
-  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${esc(l.mode)}</td><td>${(l.ms / 1000).toFixed(1)} s${l.src === "online" ? ' <span class="hint" title="Looked up on Scryfall, not in the card index">online</span>' : ""}</td></tr>`).join("");
+  $("#log").innerHTML = log.map(l => `<tr><td>${l.n}</td><td>${esc(l.name)}</td><td>${esc(l.set)}${l.cn ? " #" + esc(l.cn) : ""}</td><td>${tag(l.how)}</td><td>${esc(l.mode)}</td><td>${(l.ms / 1000).toFixed(1)} s</td></tr>`).join("");
   const line = (rows, label) => {
     const t = rows.length, count = k => rows.filter(l => HOW[l.how][0] === k).length, pct = n => ` (${Math.round(n * 100 / t)}%)`;
     return `<div>${label}<span>${t} scans</span> · <span>✔ automatic: ${count("exact")}${pct(count("exact"))}</span> · <span>✋ printing chosen: ${count("name")}${pct(count("name"))}</span> · ` +
       `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span>` +
-      (rows.some(l => l.src === "online") ? ` · <span>looked up online: ${rows.filter(l => l.src === "online").length}</span>` : "") + `</div>`;
+      `</div>`;
   };
   const m1 = log.filter(l => l.mode === 1), m2 = log.filter(l => l.mode === 2);
   $("#stats").innerHTML = !log.length ? `<span class="hint">Nothing yet.</span>`
@@ -847,25 +800,33 @@ $("#copyLog").onclick = async () => {
 };
 $("#clearLog").onclick = () => { log = []; renderLog(); };
 renderLog();
-loadIndex().catch(e => { IDX.state = "failed: " + e.message + ", using Scryfall online"; diag(); });
+loadIndex().catch(e => { IDX.state = "failed (" + e.message + "): cards can't be identified"; diag(); });
 
-// typing a name: autocomplete, then the printing picker
+// typing a name: suggestions and search in the card index, then the printing picker
 let acTimer = 0;
 $("#manualName").addEventListener("input", () => {
-  clearTimeout(acTimer); const q = $("#manualName").value.trim(); if (q.length < 2) return;
-  acTimer = setTimeout(async () => { const d = await sf("/cards/autocomplete?q=" + encodeURIComponent(q)).catch(() => null);
-    $("#acList").innerHTML = (d?.data || []).map(n => `<option value="${esc(n)}">`).join(""); }, 250);
+  clearTimeout(acTimer); const q = normName($("#manualName").value); if (q.length < 2 || !IDX.data) return;
+  acTimer = setTimeout(() => {
+    const D = IDX.data, keys = [];
+    for (const k of D.byName.keys()) if (k.startsWith(q)) keys.push(k);
+    keys.sort((a, b) => a.length - b.length || a.localeCompare(b));         // shortest (closest) first
+    $("#acList").innerHTML = [...new Set(keys.slice(0, 40).map(k => D.name[D.byName.get(k)[0]]))].slice(0, 12).map(n => `<option value="${esc(n)}">`).join("");
+  }, 150);
 });
-async function manualFind() {
+function manualFind() {
   const q = $("#manualName").value.trim(); if (!q) return;
-  status("Looking up on Scryfall…");
-  const named = await sf("/cards/named?fuzzy=" + encodeURIComponent(q)).catch(() => null);
-  if (!named) { status(`No card called “${q}”.`, "bad"); return; }
-  const prints = await printsOf(named);
+  if (!IDX.data) { status("The card index isn't loaded, so cards can't be looked up yet.", "bad"); return; }
+  // typed: exact name, else the shortest name starting with what was typed, else the closest name
+  const D = IDX.data, nq = normName(q);
+  let key = D.byName.has(nq) ? nq : null;
+  if (!key && nq.length >= 3) { for (const k of D.byName.keys()) if (k.startsWith(nq) && (!key || k.length < key.length)) key = k; }
+  key ||= localName(q)?.key;
+  if (!key) { status(`No card called “${q}” in the card index.`, "bad"); return; }
+  const prints = D.byName.get(key).slice().sort((a, b) => (D.sets.get(D.set[b])?.released || "").localeCompare(D.sets.get(D.set[a])?.released || "")).map(printingOf);
   current = current || { name: "", info: { num: "", sets: [], lang: "" }, raw: { name: { text: "", confidence: 0 }, set: { text: "", confidence: 0 } }, crops: [document.createElement("canvas"), document.createElement("canvas")], ms: { read: 0, lookup: 0 } };
-  current.res = prints.length === 1 ? { card: prints[0], how: "typed" } : { card: null, how: "typed-choose", named, prints, suggested: new Set() };
+  current.res = prints.length === 1 ? { card: prints[0], how: "typed" } : { card: null, how: "typed-choose", named: prints[0], prints, suggested: new Set() };
   if (prints.length === 1) addLog(prints[0], "typed", 0);
-  renderResult(); status(prints.length === 1 ? `Found: ${named.name}` : "Choose the printing you have.", prints.length === 1 ? "ok" : "warn");
+  renderResult(); status(prints.length === 1 ? `Found: ${prints[0].name}` : "Choose the printing you have.", prints.length === 1 ? "ok" : "warn");
 }
 $("#manualGo").onclick = manualFind;
 $("#manualName").addEventListener("keydown", e => { if (e.key === "Enter") manualFind(); });
