@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.03-3";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.03-4";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -61,6 +61,7 @@ function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
   el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` + (boxActive() ? " · Box mode" : "") +
+    ` · Sound: ${!$("#sound").checked ? "off" : !audio ? "not enabled yet (tap the page)" : audio.state === "running" ? "on" : audio.state + " (tap the page)"}` +
     (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Auto: ${autoWhy || "starting"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
@@ -733,19 +734,31 @@ async function scan(trigger = "auto") {
 /* A short blip when a card is identified (Web Audio, no sound file). Browsers only allow sound after a tap,
    so the audio is unlocked when the camera is started. */
 let audio = null;
-function unlockAudio() { try { audio ||= new (window.AudioContext || window.webkitAudioContext)(); audio.resume?.(); } catch {} }
+function unlockAudio() {
+  try { audio ||= new (window.AudioContext || window.webkitAudioContext)(); if (audio.state !== "running") audio.resume?.(); } catch {}
+}
+// browsers only allow sound after a tap, and may pause it again (e.g. after switching apps): every tap re-enables it
+addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
+addEventListener("keydown", unlockAudio, { capture: true });
+/** Two short rising tones (about 0.2 s), loud enough for a phone speaker. Plays through the media volume. */
 function blip() {
   if (!$("#sound").checked || !audio) return;
   try {
-    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
-    o.type = "sine"; o.frequency.setValueAtTime(1320, t);
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.1);
+    if (audio.state !== "running") audio.resume?.();
+    const t = audio.currentTime + 0.02, master = audio.createGain(); master.gain.value = 0.9; master.connect(audio.destination);
+    [[880, 0], [1320, 0.09]].forEach(([f, dt]) => {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = "triangle"; o.frequency.setValueAtTime(f, t + dt);
+      g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(1, t + dt + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
+      o.connect(g).connect(master); o.start(t + dt); o.stop(t + dt + 0.12);
+    });
     window.__blips = (window.__blips || 0) + 1;     // counted for the automated tests
   } catch {}
 }
 try { $("#sound").checked = localStorage.getItem("scanSound") !== "0"; } catch {}
 $("#sound").onchange = () => { try { localStorage.setItem("scanSound", $("#sound").checked ? "1" : "0"); } catch {} if ($("#sound").checked) { unlockAudio(); blip(); } };
+$("#testSound").onclick = () => { unlockAudio(); const was = $("#sound").checked; $("#sound").checked = true; blip(); $("#sound").checked = was;
+  $("#soundMsg").textContent = !audio ? "This browser doesn't allow sound here." : audio.state === "running" ? "Played. Nothing heard? Turn up the media volume." : `Sound is ${audio.state}: tap the page and try again.`; };
 
 // ------------------------------------------------------------------ results and log
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
