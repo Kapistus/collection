@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.03-1";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.03-3";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -61,7 +61,7 @@ function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
   el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` + (boxActive() ? " · Box mode" : "") +
-    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Movement: ${motion == null ? "–" : motion.toFixed(1)} (still below ${STILL}) · Auto: ${!$("#auto").checked ? "off" : choosing ? "paused until you choose the printing or skip" : armed ? "waiting for a still card" : "waiting for the card to change"}` : "") +
+    (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Auto: ${autoWhy || "starting"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
 addEventListener("error", e => { status("Error: " + e.message, "bad"); lastEvent = "error"; diag(); });
@@ -293,6 +293,8 @@ function renderBox() {
     : source === "video" ? "Box calibrated with another camera or resolution: recalibrate" : "Box mode on";
 }
 $("#calib").onclick = () => calibrateBox();
+$("#idxCheck").onclick = () => checkIndex(false);
+$("#idxForce").onclick = () => checkIndex(true);
 renderBox();
 $("#boxOff").onclick = () => { boxCal = null; try { localStorage.removeItem("scanBox"); } catch {} cardRect = cardAlt = null; renderBox(); drawOverlay(); status("Box mode off."); };
 
@@ -499,13 +501,16 @@ function idbOpen() {
 async function idbGet(k) { const db = await idbOpen(); return new Promise((res, rej) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
 async function idbSet(k, v) { const db = await idbOpen(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
 const fmtN = n => n.toLocaleString("en-US");
-async function loadIndex() {
+/** Load the card index: the stored copy if it's current, else download it. force: download even if current.
+    Returns "current", "updated", "offline" (couldn't check, using the stored copy) or "failed". */
+async function loadIndex(force = false) {
   IDX.state = "checking…"; diag();
   let ver = null, stored = null;
   try { const r = await fetch(abs("data/version.json"), { cache: "no-cache" }); if (r.ok) ver = await r.json(); } catch {}
   try { stored = await idbGet("index"); } catch {}
   let text = null, v = null;
-  if (stored?.text && (!ver || stored.sha === ver.sha)) { text = stored.text; v = stored.version; }   // up to date (or offline: use what we have)
+  let result = "current";
+  if (stored?.text && (!ver || (stored.sha === ver.sha && !force))) { text = stored.text; v = stored.version; if (!ver) result = "offline"; }   // up to date (or offline: use what we have)
   else if (ver) {
     try {
       const r = await fetch(abs(`data/cards.txt.gz?v=${ver.sha}`)); if (!r.ok) throw new Error("HTTP " + r.status);
@@ -514,12 +519,23 @@ async function loadIndex() {
         IDX.state = `downloading ${Math.min(99, Math.round(got * 100 / (ver.bytes || got)))}% of ${(ver.bytes / 1e6).toFixed(1)} MB`; diag(); }
       const blob = new Blob(parts), head = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
       text = head[0] === 0x1f && head[1] === 0x8b ? await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).text() : await blob.text();
-      v = ver;
+      v = ver; result = "updated";
       try { await idbSet("index", { sha: ver.sha, version: ver, text }); } catch {}   // can't store: use it for this visit only
-    } catch (e) { if (stored?.text) { text = stored.text; v = stored.version; } else { IDX.state = "download failed: cards can't be identified until it loads"; diag(); return; } }
-  } else { IDX.state = "not available: cards can't be identified until it loads"; diag(); return; }
-  IDX.data = parseIndex(text); IDX.version = v;
+    } catch (e) { if (stored?.text) { text = stored.text; v = stored.version; result = "failed"; } else { IDX.state = "download failed: cards can't be identified until it loads"; diag(); return "failed"; } }
+  } else { IDX.state = "not available: cards can't be identified until it loads"; diag(); return "failed"; }
+  if (result !== "current" || !IDX.data) { IDX.data = parseIndex(text); IDX.version = v; }
   IDX.state = `${fmtN(IDX.data.n)} printings, ${(v?.source_updated || v?.built || "").slice(0, 10)}`; diag();
+  return result;
+}
+/** "Check for card index update" (and "Download again"): ask the site for the current index version now. */
+async function checkIndex(force) {
+  const b1 = $("#idxCheck"), b2 = $("#idxForce"); b1.disabled = b2.disabled = true;
+  const before = IDX.version?.sha;
+  const r = await loadIndex(force).catch(() => "failed");
+  b1.disabled = b2.disabled = false;
+  const date = (IDX.version?.source_updated || IDX.version?.built || "").slice(0, 10);
+  $("#idxMsg").textContent = r === "updated" ? (IDX.version?.sha === before ? `Downloaded again (cards from ${date}).` : `Updated: cards from ${date}, ${fmtN(IDX.data.n)} printings.`)
+    : r === "current" ? `Already up to date (cards from ${date}).` : r === "offline" ? "Couldn't reach the site; using the stored index." : "Couldn't download the index.";
 }
 const normName = s => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9぀-鿿가-힯]/g, "");
 const normCn = cn => String(cn).toLowerCase().replace(/^0+(?=\d)/, "");
@@ -926,7 +942,7 @@ $("#focus").oninput = () => { ctlTouched = true; showFocus(); clearTimeout(focus
 let zoomTimer = 0;
 $("#zoom").oninput = () => { ctlTouched = true; $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
   zoomTimer = setTimeout(() => setTrack({ zoom: +$("#zoom").value }), 60); };
-$("#capture").onclick = () => { choosing = false; scan("manual"); };   // an explicit capture ends a pending choice
+$("#capture").onclick = () => { choosing = false; armed = false; lastShot = cardRect ? thumb() : null; movedSince = 0; scan("manual"); };   // an explicit capture ends a pending choice
 /** Raw camera information, to see what the browser actually offers. */
 $("#camDetails").onclick = () => {
   const track = stream?.getVideoTracks()[0], pre = $("#camDump");
@@ -941,7 +957,10 @@ $("#camDetails").onclick = () => {
 // automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
 const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
 const STILL = 12;                                 // average brightness change per pixel (0–255) that still counts as "not moving"
-let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0;
+let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0, movedSince = 0, autoWhy = "";
+/* A new card is recognised in two ways: the picture inside the outline clearly moved since the last capture (a card
+   slid in, or was swapped), or it differs from the card captured last. Either one re-arms automatic capture. */
+const MOVED = () => boxActive() ? 15 : 25;            // movement that counts as "something happened"
 // box mode: the phone and the box don't move, so check more often and need a shorter still moment (~0.25 s instead of ~0.6 s)
 const tick = () => setTimeout(() => { try { step(); } finally { tick(); } }, boxActive() ? 120 : 200);
 function step() {
@@ -949,21 +968,29 @@ function step() {
   if (!busy) updateCard();
   drawOverlay();
   if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
-    prev = null; stillFor = 0; motion = null; diag();
+    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = "no card found in the picture"; diag();
     if (++goneFor >= (boxActive() ? 8 : 5) && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
     return;
   }
   goneFor = 0;
   const t = thumb();
-  motion = prev ? diff(t, prev) : null; prev = t; diag();
-  if (!$("#auto").checked || busy || choosing) return;   // paused while a printing is being chosen
+  motion = prev ? diff(t, prev) : null; prev = t;
+  if (motion !== null) movedSince = Math.max(movedSince, motion);
+  if (!$("#auto").checked) { autoWhy = "off"; diag(); return; }
+  if (choosing) { autoWhy = "paused until you choose the printing or skip"; diag(); return; }
+  if (busy) { autoWhy = "reading…"; diag(); return; }
   if (!armed) {
-    if (lastShot && diff(t, lastShot) > 16) { armed = true; status("Hold the card still…"); }
-    return;
+    const changed = lastShot ? diff(t, lastShot) : 99;
+    if (movedSince > MOVED() || changed > 10) { armed = true; stillFor = 0; status("Hold the card still…"); }
+    else { autoWhy = `waiting for a new card (difference from the last one ${changed.toFixed(0)}, needs 10; or movement)`; diag(); return; }
   }
-  if (cardRect.h < MIN_CARD_PX || detMiss > 0) { stillFor = 0; return; }   // too far away, or not seen in this frame   // too far away to read: the overlay says "Move the card closer"
+  if (cardRect.h < MIN_CARD_PX) { stillFor = 0; autoWhy = `card too small in the picture (${Math.round(cardRect.h)} px tall, needs ${MIN_CARD_PX}): move the camera closer`; diag(); return; }
+  if (detMiss > 2) { stillFor = 0; autoWhy = "card not found in the last frames"; diag(); return; }
+  if (detMiss > 0) { autoWhy = "card not found in this frame (keeps waiting)"; diag(); return; }   // one missed frame doesn't restart the wait
   stillFor = motion !== null && motion < STILL ? stillFor + 1 : 0;
-  if (stillFor >= (boxActive() ? 2 : 3)) { armed = false; lastShot = t; stillFor = 0; scan("auto"); }
+  const need = boxActive() ? 2 : 3;
+  autoWhy = `waiting for a still card (${stillFor}/${need}, movement ${motion == null ? "–" : motion.toFixed(1)}, still below ${STILL})`; diag();
+  if (stillFor >= need) { armed = false; lastShot = t; stillFor = 0; movedSince = 0; scan("auto"); }
 }
 tick();
 
