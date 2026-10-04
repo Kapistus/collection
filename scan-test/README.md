@@ -26,7 +26,7 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 
 **While you choose a printing**, automatic scanning pauses, so the list doesn't change under you. Choosing a printing or pressing **Skip** continues; **Capture now** also ends the choice.
 
-**Sound:** two short rising tones when a card is identified (not when you have to choose the printing). Switch it off with **Sound** (remembered); **Test sound** plays it now. It plays through the phone's *media* volume. Browsers only allow sound after a tap and may pause it again (for example after switching apps); any tap on the page turns it back on, and the diagnostics line shows the sound state.
+**Sound and vibration:** two short rising tones when a card is identified (not when you have to choose the printing), played like any media file through the phone's *media* volume; **Vibrate** adds a short vibration (Android). Both are remembered. **Test sound** plays it now and reports what happened, and the diagnostics line shows the result of the last attempt ("played", or why the browser blocked it). Browsers only allow sound after a tap on the page; Chrome can also mute a site (site settings → Sound).
 
 **Camera:** the page remembers the camera you used last and starts with it next time (matched by its id, or by its name if the browser has changed the id). If it's no longer available, the default back camera is used.
 

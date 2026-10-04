@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.03-4";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-1";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -61,7 +61,7 @@ function diag() {
   const el = $("#diag"); if (!el) return;
   const cam = source === "video" ? `${video.videoWidth}×${video.videoHeight}` : "off";
   el.textContent = `Text reader: ${readerState} · Card index: ${IDX.state} · Camera: ${cam}` + (boxActive() ? " · Box mode" : "") +
-    ` · Sound: ${!$("#sound").checked ? "off" : !audio ? "not enabled yet (tap the page)" : audio.state === "running" ? "on" : audio.state + " (tap the page)"}` +
+    ` · Sound: ${!$("#sound").checked ? "off" : "on, last: " + lastSound}` +
     (source === "video" ? ` · Card: ${cardRect ? `found (${Math.round(cardRect.h / video.videoHeight * 100)}% of picture height, edges ${Math.round(detCov * 100)}%${cardIsFrame ? ", from the coloured frame" : ""})` : "not found"} · Auto: ${autoWhy || "starting"}` : "") +
     (lastEvent ? ` · Last: ${lastEvent}` : "");
 }
@@ -733,32 +733,65 @@ async function scan(trigger = "auto") {
 // ------------------------------------------------------------------ sound
 /* A short blip when a card is identified (Web Audio, no sound file). Browsers only allow sound after a tap,
    so the audio is unlocked when the camera is started. */
-let audio = null;
+/* Sound: a short WAV made in the page, played through an <audio> element like any media (the most dependable way on
+   phones), with Web Audio as a backup. Optional vibration (Android). Browsers only allow sound after a tap on the page. */
+let audio = null, lastSound = "not played yet";
+const beepWav = (() => {                            // two rising tones, 0.22 s, 22 kHz mono 16-bit
+  const rate = 22050, n = Math.round(rate * 0.22), buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate, second = t >= 0.1, f = second ? 1320 : 880, local = second ? t - 0.1 : t;
+    const env = Math.min(1, local / 0.008) * Math.max(0, 1 - local / 0.11);
+    v.setInt16(44 + i * 2, Math.round(Math.sin(2 * Math.PI * f * t) * env * 0.85 * 32767), true);
+  }
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+})();
+const beepEl = new Audio(beepWav); beepEl.preload = "auto";
 function unlockAudio() {
   try { audio ||= new (window.AudioContext || window.webkitAudioContext)(); if (audio.state !== "running") audio.resume?.(); } catch {}
 }
 // browsers only allow sound after a tap, and may pause it again (e.g. after switching apps): every tap re-enables it
 addEventListener("pointerdown", unlockAudio, { capture: true, passive: true });
 addEventListener("keydown", unlockAudio, { capture: true });
-/** Two short rising tones (about 0.2 s), loud enough for a phone speaker. Plays through the media volume. */
-function blip() {
-  if (!$("#sound").checked || !audio) return;
-  try {
-    if (audio.state !== "running") audio.resume?.();
-    const t = audio.currentTime + 0.02, master = audio.createGain(); master.gain.value = 0.9; master.connect(audio.destination);
-    [[880, 0], [1320, 0.09]].forEach(([f, dt]) => {
-      const o = audio.createOscillator(), g = audio.createGain();
-      o.type = "triangle"; o.frequency.setValueAtTime(f, t + dt);
-      g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(1, t + dt + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
-      o.connect(g).connect(master); o.start(t + dt); o.stop(t + dt + 0.12);
-    });
-    window.__blips = (window.__blips || 0) + 1;     // counted for the automated tests
-  } catch {}
+function webAudioBeep() {
+  if (!audio) return false;
+  if (audio.state !== "running") audio.resume?.();
+  const t = audio.currentTime + 0.02, master = audio.createGain(); master.gain.value = 0.9; master.connect(audio.destination);
+  [[880, 0], [1320, 0.1]].forEach(([f, dt]) => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = "triangle"; o.frequency.setValueAtTime(f, t + dt);
+    g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(1, t + dt + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
+    o.connect(g).connect(master); o.start(t + dt); o.stop(t + dt + 0.12);
+  });
+  return true;
 }
-try { $("#sound").checked = localStorage.getItem("scanSound") !== "0"; } catch {}
-$("#sound").onchange = () => { try { localStorage.setItem("scanSound", $("#sound").checked ? "1" : "0"); } catch {} if ($("#sound").checked) { unlockAudio(); blip(); } };
-$("#testSound").onclick = () => { unlockAudio(); const was = $("#sound").checked; $("#sound").checked = true; blip(); $("#sound").checked = was;
-  $("#soundMsg").textContent = !audio ? "This browser doesn't allow sound here." : audio.state === "running" ? "Played. Nothing heard? Turn up the media volume." : `Sound is ${audio.state}: tap the page and try again.`; };
+/** Feedback for an identified card: sound and/or vibration, as switched on. Returns a short report of what happened. */
+function blip(force = false) {
+  if ($("#vibrate").checked || force) { try { navigator.vibrate?.(80); } catch {} }
+  if (!$("#sound").checked && !force) return;
+  window.__blips = (window.__blips || 0) + 1;       // counted for the automated tests
+  try {
+    beepEl.currentTime = 0; beepEl.volume = 1;
+    const p = beepEl.play();
+    lastSound = "playing…";
+    Promise.resolve(p).then(() => { lastSound = "played"; diag(); },
+      e => { const ok = (() => { try { return webAudioBeep(); } catch { return false; } })();
+             lastSound = `blocked (${e?.name || e})` + (ok ? ", played with the backup method" : ""); diag(); });
+  } catch (e) { lastSound = "failed: " + e.message; try { webAudioBeep(); } catch {} }
+  diag();
+}
+for (const [id, key] of [["sound", "scanSound"], ["vibrate", "scanVibrate"]]) {
+  try { const v = localStorage.getItem(key); if (v !== null) $("#" + id).checked = v !== "0"; } catch {}
+  $("#" + id).onchange = () => { try { localStorage.setItem(key, $("#" + id).checked ? "1" : "0"); } catch {} };
+}
+$("#testSound").onclick = () => {
+  unlockAudio(); blip(true);
+  setTimeout(() => { $("#soundMsg").textContent = lastSound === "played" ? "Played. Nothing heard? Check the media volume, and that Chrome isn't muted for this site (site settings → Sound)."
+    : `Sound ${lastSound}.`; }, 400);
+};
 
 // ------------------------------------------------------------------ results and log
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
