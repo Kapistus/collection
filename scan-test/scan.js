@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-7";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-9";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -174,12 +174,13 @@ function frameToCard(f) {
 let pending = null;
 function updateCard() {
   const r = boxActive() ? detectBoxCard() : detectCard();
+  if (boxActive()) renderBoxDbg(r); else $("#boxDbg").hidden = true;
   boxFull = !!r?.full;
   if (!r) { if (++detMiss > 3) { cardRect = null; cardAlt = null; detCov = 0; } return; }
   detMiss = 0; detCov = r.cov; cardAlt = r.alt; cardIsFrame = r.frame;
   const close = (a, b) => a && Math.abs(a.x - b.x) < b.w * 0.08 && Math.abs(a.y - b.y) < b.h * 0.08 && Math.abs(a.w - b.w) < b.w * 0.08;
-  if (close(cardRect, r)) { const m = 0.5; cardRect = { x: cardRect.x + (r.x - cardRect.x) * m, y: cardRect.y + (r.y - cardRect.y) * m, w: cardRect.w + (r.w - cardRect.w) * m, h: cardRect.h + (r.h - cardRect.h) * m }; }
-  else if (close(pending, r) || !cardRect) { cardRect = { x: r.x, y: r.y, w: r.w, h: r.h }; pending = null; }
+  if (close(cardRect, r)) { const m = 0.5; cardRect = { x: cardRect.x + (r.x - cardRect.x) * m, y: cardRect.y + (r.y - cardRect.y) * m, w: cardRect.w + (r.w - cardRect.w) * m, h: cardRect.h + (r.h - cardRect.h) * m, angle: (cardRect.angle || 0) + ((r.angle || 0) - (cardRect.angle || 0)) * m }; }
+  else if (close(pending, r) || !cardRect) { cardRect = { x: r.x, y: r.y, w: r.w, h: r.h, angle: r.angle || 0 }; pending = null; }
   else pending = r;
 }
 function drawOverlay() {
@@ -208,7 +209,7 @@ new ResizeObserver(drawOverlay).observe(stage);
 // ------------------------------------------------------------------ box mode
 /* For scanning into a box with the phone held still above it. "Calibrate box" takes a picture of the empty box and
    keeps a small copy of it, its colour and where it is in the picture. After that the card is found as the part of the
-   box area that differs from the empty box in colour or brightness (so white, grey and black boxes work too), which
+   box floor where it's much darker than the empty floor was (the card's border), which works on any light floor and
    keeps working as the stack of cards grows towards the camera, and capture happens sooner because the picture is
    steadier. */
 let boxCal = null;
@@ -241,7 +242,8 @@ function calibrateBox() {
   const dists = []; for (let k = 0; k < rs.length; k++) dists.push(Math.abs(rs[k] - c[0]) + Math.abs(gs[k] - c[1]) + Math.abs(bs[k] - c[2]));
   const tol = Math.max(0.07, med(dists.slice()) * 4);
   // the box: the box-coloured area connected to the middle of the picture
-  const isBox = i => brightness(d, i) > Math.min(35, yMed * 0.3) && chromaDist(d, i, c) < tol;
+  // the box floor: the same colour and about the same brightness as the middle (walls in shade are left out)
+  const isBox = i => { const Y = brightness(d, i); return Y > Math.min(35, yMed * 0.3) && Math.abs(Y - yMed) < yMed * 0.35 && chromaDist(d, i, c) < tol; };
   const seen = new Uint8Array(W * H), stack = [(Math.round(H / 2)) * W + Math.round(W / 2)];
   let x0 = W, y0 = H, x1 = 0, y1 = 0, n = 0;
   while (stack.length) {
@@ -273,25 +275,34 @@ function boxReference(W, H) {
 /** The card in box mode: the block of non-box-coloured pixels inside the box area. */
 function detectBoxCard() {
   const { W, H, d } = grabSmall(), R = boxCal.region;
-  const rx0 = Math.max(0, Math.floor((R.x - 0.06) * W)), rx1 = Math.min(W - 1, Math.ceil((R.x + R.w + 0.06) * W));
-  const ry0 = Math.max(0, Math.floor((R.y - 0.06) * H)), ry1 = Math.min(H - 1, Math.ceil((R.y + R.h + 0.06) * H));
+  const rx0 = Math.max(0, Math.floor((R.x - 0.03) * W)), rx1 = Math.min(W - 1, Math.ceil((R.x + R.w + 0.03) * W));
+  const ry0 = Math.max(0, Math.floor((R.y - 0.03) * H)), ry1 = Math.min(H - 1, Math.ceil((R.y + R.h + 0.03) * H));
   const dark = Math.min(35, boxCal.yMed * 0.3), rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
   const card = new Uint8Array(rw * rh), ref = boxReference(W, H);
+  let first = null, last = null;
   if (ref) {
-    // compared with the empty box: exposure first (the camera brightens or darkens everything as cards come and go),
-    // from the pixels that still look like the empty box
-    const ratios = [];
-    for (let y = 0; y < rh; y += 2) for (let x = 0; x < rw; x += 2) {
-      const p = (y + ry0) * W + x + rx0, i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1;
-      if (Math.abs(d[i] / s - ref[p * 3 + 1] / 255) + Math.abs(d[i + 1] / s - ref[p * 3 + 2] / 255) < boxCal.tol) ratios.push((s / 3 + 8) / (ref[p * 3] + 8));
-    }
-    ratios.sort((p, q) => p - q);
-    const gain = ratios.length > 20 ? Math.min(2, Math.max(0.5, ratios[ratios.length >> 1])) : 1;
+    /* The card's dark border on the lighter box floor: pixels much darker than the empty floor was at that spot. The
+       camera changes exposure and white balance as cards come and go, but a card border stays far darker than the
+       floor either way. Places that were dark already (walls, shadows) are left out. Each row is then scanned from
+       both sides for the first dark run: the card's side. */
+    const Ys = new Float32Array(rw * rh), sample = [], refS = [];
     for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
-      const p = (y + ry0) * W + x + rx0, i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1;
-      const dc = Math.abs(d[i] / s - ref[p * 3 + 1] / 255) + Math.abs(d[i + 1] / s - ref[p * 3 + 2] / 255) + Math.abs(d[i + 2] / s - (255 - ref[p * 3 + 1] - ref[p * 3 + 2]) / 255);
-      const db = Math.abs(Math.log((s / 3 + 8) / (gain * (ref[p * 3] + 8))));
-      card[y * rw + x] = dc >= boxCal.tol || db > 0.4 ? 1 : 0;
+      const p = (y + ry0) * W + x + rx0; Ys[y * rw + x] = brightness(d, p * 4);
+      if (!((x | y) & 3)) { sample.push(Ys[y * rw + x]); refS.push(ref[p * 3]); }
+    }
+    sample.sort((p, q) => p - q); refS.sort((p, q) => p - q);
+    const refFloor = refS[Math.floor(refS.length * 0.75)];
+    // dark now, where the empty box was light: the card's border (walls and shadows that were dark already don't count)
+    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+      const k = y * rw + x, p = (y + ry0) * W + x + rx0;
+      card[k] = Ys[k] < ref[p * 3] * 0.55 && ref[p * 3] > refFloor * 0.6 ? 1 : 0;   // much darker than the empty floor was here
+    }
+    first = new Int32Array(rh).fill(-1); last = new Int32Array(rh).fill(-1);
+    for (let y = 0; y < rh; y++) {
+      const o = y * rw;
+      for (let x = 0; x < rw - 2; x++) if (card[o + x] && card[o + x + 1] && card[o + x + 2]) { first[y] = x; break; }
+      for (let x = rw - 1; x > 1; x--) if (card[o + x] && card[o + x - 1] && card[o + x - 2]) { last[y] = x; break; }
+      if (first[y] < 0 || last[y] <= first[y]) first[y] = last[y] = -1;
     }
   } else {                                           // older calibration without the picture: by the box colour only
     for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
@@ -300,43 +311,96 @@ function detectBoxCard() {
     }
   }
   const touches = (rx, ry) => rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2;
-  const run = (vals, thr) => {                        // longest run above thr, allowing 2-pixel gaps
+  const run = (vals, thr, maxGap = 2) => {           // longest run above thr, allowing short gaps
     let best = null, start = -1, gap = 0;
     for (let k = 0; k <= vals.length; k++) {
       if (k < vals.length && vals[k] > thr) { if (start < 0) start = k; gap = 0; }
-      else if (start >= 0 && (++gap > 2 || k === vals.length)) { const e = k - gap; if (!best || e - start > best[1] - best[0]) best = [start, e]; start = -1; gap = 0; }
+      else if (start >= 0 && (++gap > maxGap || k === vals.length)) { const e = k - gap; if (!best || e - start > best[1] - best[0]) best = [start, e]; start = -1; gap = 0; }
     }
     return best;
   };
+  boxDbgData = { W, H, d, card, rx0, ry0, rw, rh };
   /* The card's outline, row by row: from the first to the last card pixel of each row. The card's dark border marks
      both sides even where the inside of the card looks like the box (a white text box on a white box). */
-  const first = new Int32Array(rh).fill(-1), last = new Int32Array(rh).fill(-1), spans = [];
+  const spans = [], fromMask = !first;
+  if (fromMask) { first = new Int32Array(rh).fill(-1); last = new Int32Array(rh).fill(-1); }
   for (let y = 0; y < rh; y++) {
     const o = y * rw;
-    for (let x = 0; x < rw - 1; x++) if (card[o + x] && card[o + x + 1]) { first[y] = x; break; }   // two in a row: not noise
-    for (let x = rw - 1; x > 0; x--) if (card[o + x] && card[o + x - 1]) { last[y] = x; break; }
+    if (!fromMask) { spans.push(first[y] >= 0 ? last[y] - first[y] + 1 : 0); continue; }
+    for (let x = 0; x < rw - 3; x++) if (card[o + x] && card[o + x + 1] && card[o + x + 2] && card[o + x + 3]) { first[y] = x; break; }   // four in a row: not noise
+    for (let x = rw - 1; x > 2; x--) if (card[o + x] && card[o + x - 1] && card[o + x - 2] && card[o + x - 3]) { last[y] = x; break; }
     spans.push(first[y] >= 0 ? last[y] - first[y] + 1 : 0);
   }
   const sorted = spans.slice().sort((p, q) => p - q), wide = sorted[Math.floor(rh * 0.9)];   // a typical wide row
-  if (wide < rw * 0.08) { boxWhy = "nothing in the box area differs from the empty box"; return null; }
-  const ry = run(spans, wide * 0.7 - 0.5);
-  if (!ry || ry[1] - ry[0] < rh * 0.2) { boxWhy = "nothing card-sized in the box area differs from the empty box"; return null; }
-  const med = a => a.sort((p, q) => p - q)[a.length >> 1], F = [], L = [];
-  for (let y = ry[0]; y <= ry[1]; y++) if (first[y] >= 0) { F.push(first[y]); L.push(last[y]); }
-  const rx = [med(F), med(L)];
-  const w = rx[1] - rx[0] + 1, h = ry[1] - ry[0] + 1;
-  if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.18) {   // not card-shaped (a hand, or the card is still sliding)
+  if (wide < rw * 0.08) { boxWhy = "no card edge found in the box area"; return null; }
+  let ry = run(spans, wide * 0.7 - 0.5);
+  if (!ry || ry[1] - ry[0] < rh * 0.2) { boxWhy = "no card-sized outline in the box area"; return null; }
+  /* The card may lie a little crooked. Straight lines are fitted to the left and right ends of the rows (rows that
+     don't fit, like a strip of changed light above or below the card, are dropped), which gives the card's tilt too. */
+  const fit = (ys, xs) => { const n = ys.length; let my = 0, mx = 0; for (let k = 0; k < n; k++) { my += ys[k]; mx += xs[k]; } my /= n; mx /= n;
+    let sxy = 0, syy = 0; for (let k = 0; k < n; k++) { sxy += (ys[k] - my) * (xs[k] - mx); syy += (ys[k] - my) ** 2; } const b = syy ? sxy / syy : 0; return { a: mx - b * my, b }; };
+  let rows = []; for (let y = ry[0]; y <= ry[1]; y++) if (first[y] >= 0) rows.push(y);
+  let Lf = null, Rf = null, tol = 2;
+  for (let pass = 0; pass < 4 && rows.length > 8; pass++) {
+    Lf = fit(rows, rows.map(y => first[y])); Rf = fit(rows, rows.map(y => last[y]));
+    const yc = (rows[0] + rows[rows.length - 1]) / 2, span = (Rf.a + Rf.b * yc) - (Lf.a + Lf.b * yc);
+    tol = Math.max(2, span * 0.04);
+    const fits = spans.map((_, y) => first[y] >= 0 && Math.abs(first[y] - (Lf.a + Lf.b * y)) <= tol && Math.abs(last[y] - (Rf.a + Rf.b * y)) <= tol ? 1 : 0);
+    const r2 = run(fits, 0.5, Math.max(2, Math.round(rh * 0.05))); if (!r2 || r2[1] - r2[0] < rh * 0.2) { Lf = null; break; }
+    ry = r2; rows = []; for (let y = ry[0]; y <= ry[1]; y++) if (fits[y]) rows.push(y);
+  }
+  if (!Lf) { boxWhy = "the sides of the block aren't straight: a card still moving, or a hand"; return null; }
+  const slope = (Lf.b + Rf.b) / 2, angle = -Math.atan(slope), cos = Math.cos(angle), sin = Math.abs(Math.sin(angle));
+  let yc = (ry[0] + ry[1]) / 2, lx = Lf.a + Lf.b * yc, rxx = Rf.a + Rf.b * yc;
+  const w = (rxx - lx) * cos;
+  // top and bottom edges the same way, column by column between the sides
+  const cols = [], tops = [], bots = [];
+  for (let x = Math.ceil(lx + (rxx - lx) * 0.12); x <= rxx - (rxx - lx) * 0.12; x++) {
+    let t = -1, b = -1;
+    for (let y = 0; y < rh - 2; y++) if (card[y * rw + x] && card[(y + 1) * rw + x] && card[(y + 2) * rw + x]) { t = y; break; }
+    for (let y = rh - 1; y > 1; y--) if (card[y * rw + x] && card[(y - 1) * rw + x] && card[(y - 2) * rw + x]) { b = y; break; }
+    if (t >= 0 && b > t) { cols.push(x); tops.push(t); bots.push(b); }
+  }
+  let h = ((ry[1] - ry[0] + 1) + w * sin) / cos;     // from the rows, if the columns don't give it
+  if (cols.length > 8) {
+    let keep = cols.map((_, k) => k), Tf, Bf;
+    for (let pass = 0; pass < 4; pass++) {
+      Tf = fit(keep.map(k => cols[k]), keep.map(k => tops[k])); Bf = fit(keep.map(k => cols[k]), keep.map(k => bots[k]));
+      const k2 = cols.map((_, k) => k).filter(k => Math.abs(tops[k] - (Tf.a + Tf.b * cols[k])) <= tol && Math.abs(bots[k] - (Bf.a + Bf.b * cols[k])) <= tol);
+      if (k2.length < cols.length * 0.4) break; keep = k2;
+    }
+    const xc = (lx + rxx) / 2, ty = Tf.a + Tf.b * xc, by = Bf.a + Bf.b * xc;
+    if (keep.length >= cols.length * 0.4 && by - ty > rh * 0.2) { h = (by - ty) * cos; yc = (ty + by) / 2; lx = Lf.a + Lf.b * yc; rxx = Rf.a + Rf.b * yc; }
+  }
+  const rx = [Math.round(lx), Math.round(rxx)];
+  if (rx[0] <= 1 && rx[1] >= rw - 2 && ry[0] <= 1 && ry[1] >= rh - 2) {   // the whole search area: not a card
+    boxWhy = "the whole box area looks like a card edge (the light changed a lot, or the box moved): recalibrate"; return null; }
+  if (Math.abs(angle) > 0.26) { boxWhy = `the block is tilted ${Math.round(angle * 180 / Math.PI)}°: a card still moving, or a hand`; return null; }
+  if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.15) {   // not card-shaped (a hand, or the card is still sliding)
     boxWhy = `the block isn't card-shaped (width/height ${(w / h).toFixed(2)}, a card is ${CARD_RATIO.toFixed(2)}${touches(rx, ry) ? "; it reaches the edge of the picture: zoom out a little" : ""})`; return null; }
-  // straight sides: most rows start and end where the card's sides are
-  const tolX = Math.max(2, w * 0.06);
-  let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) if (Math.abs(first[y] - rx[0]) <= tolX && Math.abs(last[y] - rx[1]) <= tolX) fill++;
-  fill /= h; if (fill < 0.75) { boxWhy = `the sides of the block aren't straight (${Math.round(fill * 100)}% of rows fit, needs 75%): a card still moving, or a hand`; return null; }
+  let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) if (first[y] >= 0 && Math.abs(first[y] - (Lf.a + Lf.b * y)) <= tol && Math.abs(last[y] - (Rf.a + Rf.b * y)) <= tol) fill++;
+  fill /= (ry[1] - ry[0] + 1);
+  if (fill < 0.7) { boxWhy = `the sides of the block aren't straight (${Math.round(fill * 100)}% of rows fit, needs 70%): a card still moving, or a hand`; return null; }
+  const cx = (lx + rxx) / 2 + rx0, cy = yc + ry0;
   boxWhy = "";
   const k = srcSize()[0] / W;
-  return { x: (rx[0] + rx0) * k, y: (ry[0] + ry0) * k, w: w * k, h: h * k, cov: fill, frame: false, alt: null,
+  return { x: (cx - w / 2) * k, y: (cy - h / 2) * k, w: w * k, h: h * k, angle, cov: fill, frame: false, alt: null,
     full: rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2 };
 }
-let boxFull = false, boxWhy = "";
+let boxFull = false, boxWhy = "", boxDbgData = null;
+/** "Show what box mode sees": the small camera picture, red where it's much darker than the empty floor was, the search area in
+   blue and the card found in green. */
+function renderBoxDbg(r) {
+  const cv = $("#boxDbg"), D = boxDbgData; if (!$("#boxDbgOn").checked || !D) { cv.hidden = true; return; }
+  cv.hidden = false; if (cv.width !== D.W || cv.height !== D.H) { cv.width = D.W; cv.height = D.H; }
+  const g = cv.getContext("2d"), im = g.createImageData(D.W, D.H);
+  for (let p = 0; p < D.W * D.H; p++) { const i = p * 4, y = (D.d[i] + D.d[i + 1] + D.d[i + 2]) / 6; im.data[i] = im.data[i + 1] = im.data[i + 2] = y; im.data[i + 3] = 255; }
+  for (let y = 0; y < D.rh; y++) for (let x = 0; x < D.rw; x++) if (D.card[y * D.rw + x]) { const i = ((y + D.ry0) * D.W + x + D.rx0) * 4; im.data[i] = 255; im.data[i + 1] = 40; im.data[i + 2] = 40; }
+  g.putImageData(im, 0, 0);
+  g.lineWidth = 1; g.strokeStyle = "#3ab0ff"; g.strokeRect(D.rx0 + 0.5, D.ry0 + 0.5, D.rw - 1, D.rh - 1);
+  if (r) { const k = D.W / srcSize()[0]; g.lineWidth = 2; g.strokeStyle = "#2ee86a"; g.strokeRect(r.x * k, r.y * k, r.w * k, r.h * k); }
+  g.fillStyle = "#fff"; g.font = "10px system-ui"; g.fillText(r ? "card found" : "no card: " + (boxWhy || "").slice(0, 70), 3, D.H - 4);
+}
 function renderBox() {
   const on = boxActive();
   $("#boxOff").hidden = !boxCal;
@@ -729,7 +793,11 @@ function snapshotCard(src = srcEl(), [sw, sh] = srcSize(), r = cardRectInSource(
   const x = Math.max(0, Math.floor(ux0)), y = Math.max(0, Math.floor(uy0));
   const w = Math.max(1, Math.min(sw, Math.ceil(ux1)) - x), h = Math.max(1, Math.min(sh, Math.ceil(uy1)) - y);
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
-  cv.getContext("2d").drawImage(src, x, y, w, h, 0, 0, w, h);
+  const g = cv.getContext("2d");
+  if (Math.abs(r.angle || 0) > 0.004) {              // a crooked card: turn the picture around the card's centre so it's straight
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    g.translate(cx - x, cy - y); g.rotate(-r.angle); g.drawImage(src, -cx, -cy);
+  } else g.drawImage(src, x, y, w, h, 0, 0, w, h);
   const rel = q => ({ x: q.x - x, y: q.y - y, w: q.w, h: q.h });
   return { cv, rect: rel(r), alt: a ? rel(a) : null, box: rel(readBox(r, a)), frame };
 }
@@ -766,7 +834,7 @@ async function photoSnapshot() {
     if (d && (!sameShape || !cardRect || Math.abs(d.x / P[0] - cardRect.x / vw) < 0.05)) { r = { x: d.x, y: d.y, w: d.w, h: d.h }; a = d.alt; frame = d.frame; }
   }
   if (!r && sameShape && cardRect) {               // same framing as the video: scale the video outline up
-    const k = P[0] / vw, sc = q => q && { x: q.x * k, y: q.y * k, w: q.w * k, h: q.h * k };
+    const k = P[0] / vw, sc = q => q && { x: q.x * k, y: q.y * k, w: q.w * k, h: q.h * k, angle: q.angle || 0 };
     r = sc(cardRect); a = sc(cardAlt); frame = cardIsFrame;
   }
   if (!r) { bmp.close?.(); return { ms: performance.now() - t, size: P, failed: "card not found in the photo" }; }
@@ -796,7 +864,7 @@ function mapToPhoto(bmp, P, ref) {
   let best = null;
   for (const [k, label] of [[base, "photo matched to the video"], ...(z > 1.01 ? [[base / z, "photo matched to the video (photo without zoom)"]] : [])]) {
     const ox = (P[0] - vw * k) / 2, oy = (P[1] - vh * k) / 2;
-    const map = q => q && { x: ox + q.x * k, y: oy + q.y * k, w: q.w * k, h: q.h * k };
+    const map = q => q && { x: ox + q.x * k, y: oy + q.y * k, w: q.w * k, h: q.h * k, angle: q.angle || 0 };
     const r0 = map(cardRect);
     for (const dy of [0, -0.02, 0.02]) for (const dx of [0, -0.02, 0.02]) {
       const r = { ...r0, x: r0.x + dx * r0.w, y: r0.y + dy * r0.h };

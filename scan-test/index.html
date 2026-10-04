@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.04-7">
+<meta name="app-version" content="scan-test 2026.10.04-9">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -86,6 +86,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <button id="calib" title="With the phone fixed above the empty box: learn the box's colour and position">Calibrate box</button>
       <button id="boxOff" hidden>Box mode off</button>
       <span class="hint" id="boxNote"></span>
+      <label class="check" title="Show the box-mode detection: red = much darker than the empty floor (card border), blue = search area, green = card found"><input type="checkbox" id="boxDbgOn"> Show what box mode sees</label>
     </div>
     <div class="controls camctl" id="camControls" hidden>
       <button id="torch" hidden>Flashlight</button>
@@ -98,6 +99,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <div class="placeholder" id="placeholder">Start the camera to scan cards.</div>
       <svg id="overlay" hidden></svg>
     </div>
+    <canvas id="boxDbg" hidden style="width:100%;max-width:480px;border-radius:8px;margin-top:6px;display:block"></canvas>
     <p class="status" id="status"></p>
     <p class="hint" id="diag"></p>
     <p class="row"><button id="idxCheck" title="Ask the site for the newest card index now">Check for card index update</button><button id="idxForce" title="Download the card index again even if it's current">Download again</button><span class="hint" id="idxMsg"></span><button id="copyDiag" title="Copy the line above as text, to paste into a message">Copy diagnostics</button></p>
@@ -125,6 +127,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.04-7"></script>
+<script src="scan.js?v=2026.10.04-9"></script>
 </body>
 </html>
