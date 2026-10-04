@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-9";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-10";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -260,6 +260,8 @@ function calibrateBox() {
   for (let p = 0; p < W * H; p++) { const i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1; ref[p * 3] = Math.min(255, Math.round(s / 3)); ref[p * 3 + 1] = Math.round(d[i] / s * 255); ref[p * 3 + 2] = Math.round(d[i + 1] / s * 255); }
   boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, zoom: curZoom, at: Date.now(),
     ref: { W, H, b64: toB64(ref) } };
+  boxCal.emptySig = Array.from(boxSig(), v => Math.round(v * 1000) / 1000);
+  bArmed = true; bLastSig = null; lastBoxRect = null;
   try { localStorage.setItem("scanBox", JSON.stringify(boxCal)); } catch {}
   cardRect = cardAlt = null; prev = null; stillFor = 0; armed = true; renderBox(); drawOverlay();
   status("Box calibrated. Slide a card in.", "ok");
@@ -1296,6 +1298,41 @@ function sameAsLast(q) {                           // best match over small shif
   for (const dx of [-0.03, -0.015, 0, 0.015, 0.03]) for (const dy of [-0.03, -0.015, 0, 0.015, 0.03]) best = Math.max(best, picSimilarity(lastSig, cardSig(q, dx, dy)));
   return best;
 }
+/* Box mode triggers on the box area as a whole, not on finding the card: something moved in the box, then the picture
+   is still again, and it isn't the empty box → scan. Finding the card is only used to place the read areas; if it
+   fails, the card's last known place (or the middle of the box) is used. So a card that's hard to outline is still
+   scanned, and a card is never re-scanned just because it stays there. Brightness changes don't count as movement. */
+let bPrev = null, bStill = 0, bArmed = true, bLastSig = null, bMoved = 0, lastBoxRect = null;
+const boxAreaRect = () => { const [sw, sh] = srcSize(), R = boxCal.region; return { x: R.x * sw, y: R.y * sh, w: R.w * sw, h: R.h * sh }; };
+const boxSig = () => normThumb(srcEl(), boxAreaRect(), 24, 32);
+/** Where to read when the card's outline isn't found: where the last card was, else a card-shaped area in the box. */
+function boxFallback() {
+  if (lastBoxRect) return { ...lastBoxRect };
+  const A = boxAreaRect(); let h = A.h * 0.92, w = h * CARD_RATIO; if (w > A.w * 0.95) { w = A.w * 0.95; h = w / CARD_RATIO; }
+  return { x: A.x + (A.w - w) / 2, y: A.y + (A.h - h) / 2, w, h, angle: 0 };
+}
+function boxStep(quiet) {
+  if (cardRect) lastBoxRect = { ...cardRect };
+  const t = boxSig(), m = bPrev ? 1 - picSimilarity(t, bPrev) : 0; bPrev = t;
+  motion = m * 100;
+  if (!$("#auto").checked) { autoWhy = "off"; diag(); return; }
+  if (choosing) { autoWhy = "paused until you choose the printing or skip"; diag(); return; }
+  if (busy) { autoWhy = "reading…"; diag(); return; }
+  if (quiet) { bStill = 0; autoWhy = "settling after the scan"; diag(); return; }
+  if (m > 0.08) { bMoved = m; if (!bArmed) { bArmed = true; status("Card coming in…"); } }
+  bStill = m < 0.03 ? bStill + 1 : 0;
+  const empty = boxCal.emptySig ? picSimilarity(t, Float32Array.from(boxCal.emptySig)) : -1;
+  if (empty > 0.9) { autoWhy = `the box is empty (match with the empty box ${Math.round(empty * 100)}%)`; diag(); return; }
+  if (bStill < 2) { autoWhy = `waiting for the box to be still (${bStill}/2, movement ${Math.round(m * 100)}, still below 3)`; diag(); return; }
+  if (!bArmed) {
+    const same = bLastSig ? picSimilarity(t, bLastSig) : 0;
+    if (same > 0.85) { autoWhy = `same card as the last scan (match ${Math.round(same * 100)}%): slide in the next card`; diag(); return; }
+  }
+  bArmed = false; bLastSig = t; bStill = 0;
+  if (!cardRect) { cardRect = boxFallback(); detMiss = 0; }   // outline not found: read where the card should be
+  lastSig = cardSig(cardRect);
+  scan("auto");
+}
 // box mode: the phone and the box don't move, so check more often and need a shorter still moment (~0.25 s instead of ~0.6 s)
 const tick = () => setTimeout(() => { try { step(); } finally { tick(); } }, boxActive() ? 120 : 200);
 function step() {
@@ -1303,6 +1340,7 @@ function step() {
   if (!busy) updateCard();
   drawOverlay();
   const quiet = busy || performance.now() < quietUntil;   // during and just after a scan the picture may jump: ignore it
+  if (boxActive()) { boxStep(quiet); return; }
   if (!cardRect) {
     prev = null; prevN = null; stillFor = 0; motion = null; autoWhy = choosing ? "paused until you choose the printing or skip" : boxActive() && boxWhy ? `no card found: ${boxWhy}` : "no card found in the picture"; diag();
     if (!quiet && ++goneFor >= 2 && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
