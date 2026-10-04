@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.04-4">
+<meta name="app-version" content="scan-test 2026.10.04-5">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -91,7 +91,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <button id="torch" hidden>Flashlight</button>
       <span class="ctl" id="focusBox" hidden><label class="check"><input type="checkbox" id="autoFocus" checked> Auto focus</label>
         <input type="range" id="focus" disabled aria-label="Focus distance"><span id="focusVal" class="hint"></span></span>
-      <span class="ctl" id="zoomBox" hidden><label for="zoom">Zoom</label> <input type="range" id="zoom" aria-label="Zoom"><span id="zoomVal" class="hint"></span></span>
+      <span class="ctl" id="zoomBox" hidden><label for="zoom">Zoom</label> <button id="zoomOut" title="Zoom out a little" aria-label="Zoom out">−</button><input type="range" id="zoom" min="0" max="1000" step="1" aria-label="Zoom"><button id="zoomIn" title="Zoom in a little" aria-label="Zoom in">+</button><span id="zoomVal" class="hint"></span></span>
     </div>
     <div class="stage" id="stage">
       <video id="video" playsinline muted hidden></video>
@@ -100,7 +100,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
     </div>
     <p class="status" id="status"></p>
     <p class="hint" id="diag"></p>
-    <p class="row"><button id="idxCheck" title="Ask the site for the newest card index now">Check for card index update</button><button id="idxForce" title="Download the card index again even if it's current">Download again</button><span class="hint" id="idxMsg"></span></p>
+    <p class="row"><button id="idxCheck" title="Ask the site for the newest card index now">Check for card index update</button><button id="idxForce" title="Download the card index again even if it's current">Download again</button><span class="hint" id="idxMsg"></span><button id="copyDiag" title="Copy the line above as text, to paste into a message">Copy diagnostics</button></p>
     <p class="row" id="detailsRow" hidden><button id="camDetails" title="Show what this camera and browser report">Camera details</button><span class="hint" id="ctlNote"></span></p>
     <pre id="camDump" hidden style="max-height:220px;overflow:auto;font-size:11px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px"></pre>
     <p class="hint">Hold the card upright in front of the camera, in good light. The white outline follows the card; a dashed outline means no card is found yet. The site reads the two marked areas: the <b>name</b> and the <b>set code and collector number</b> in the bottom-left corner. <span id="camInfo"></span></p>
@@ -125,6 +125,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.04-4"></script>
+<script src="scan.js?v=2026.10.04-5"></script>
 </body>
 </html>

@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-4";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-5";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -25,6 +25,7 @@ const abs = p => new URL(p, location.href).href;
 
 const video = $("#video"), stage = $("#stage"), overlay = $("#overlay");
 let stream = null, source = null;                 // source: "video" while the camera runs
+let zoomCaps = null, curZoom = null;              // the camera's zoom range, and the zoom in use (null: can't zoom)
 let workers = null, busy = false;
 let log = [], current = null;
 
@@ -211,7 +212,8 @@ new ResizeObserver(drawOverlay).observe(stage);
    camera, and capture happens sooner because the picture is steadier. */
 let boxCal = null;
 try { boxCal = JSON.parse(localStorage.getItem("scanBox") || "null"); } catch {}
-const boxActive = () => !!boxCal && source === "video" && boxCal.vw === video.videoWidth && boxCal.vh === video.videoHeight;
+const boxZoomOk = () => boxCal?.zoom == null || curZoom == null || Math.abs(boxCal.zoom - curZoom) < 0.02;   // zooming moves the box in the picture
+const boxActive = () => !!boxCal && source === "video" && boxCal.vw === video.videoWidth && boxCal.vh === video.videoHeight && boxZoomOk();
 /** The camera picture shrunk to 320 px wide, as RGBA. */
 function grabSmall() {
   const [sw, sh] = srcSize(), W = DET_W, H = Math.max(40, Math.round(DET_W * sh / sw));
@@ -249,7 +251,7 @@ function calibrateBox() {
     if (x > 0) stack.push(p - 1); if (x < W - 1) stack.push(p + 1); if (y > 0) stack.push(p - W); if (y < H - 1) stack.push(p + W);
   }
   if (n < W * H * 0.05) { status("Couldn't find the box in the middle of the picture. Centre the empty box and try again.", "bad"); return; }
-  boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, at: Date.now() };
+  boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, zoom: curZoom, at: Date.now() };
   try { localStorage.setItem("scanBox", JSON.stringify(boxCal)); } catch {}
   cardRect = cardAlt = null; prev = null; stillFor = 0; armed = true; renderBox(); drawOverlay();
   status(grey ? "Box calibrated. Its colour is close to grey, so a brightly coloured box would work more reliably." : "Box calibrated. Slide a card in.", grey ? "warn" : "ok");
@@ -291,7 +293,8 @@ function renderBox() {
   $("#boxOff").hidden = !boxCal;
   $("#calib").textContent = boxCal ? "Recalibrate box" : "Calibrate box";
   $("#boxNote").textContent = !boxCal ? "" : on ? `Box mode on (calibrated ${new Date(boxCal.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`
-    : source === "video" ? "Box calibrated with another camera or resolution: recalibrate" : "Box mode on";
+    : source === "video" ? (!boxZoomOk() && boxCal.vw === video.videoWidth && boxCal.vh === video.videoHeight
+        ? `Box calibrated at zoom ${(+boxCal.zoom).toFixed(2)}×: set that zoom again, or recalibrate` : "Box calibrated with another camera or resolution: recalibrate") : "Box mode on";
 }
 $("#calib").onclick = () => calibrateBox();
 $("#idxCheck").onclick = () => checkIndex(false);
@@ -1009,9 +1012,9 @@ async function startCamera(deviceId) {
   stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   const track = stream.getVideoTracks()[0], caps = track.getCapabilities?.() || {};
   $("#camInfo").textContent = `Camera: ${video.videoWidth}×${video.videoHeight}.`;
-  setupCamControls(track);
+  setupCamControls(track); restoreZoom(track);
   // some phones report flashlight/focus/zoom only once the camera is delivering frames: check again shortly
-  for (const ms of [700, 2000]) setTimeout(() => { if (stream?.getVideoTracks()[0] === track && !ctlTouched) setupCamControls(track); }, ms);
+  for (const ms of [700, 2000]) setTimeout(() => { if (stream?.getVideoTracks()[0] === track && !ctlTouched) { const had = !!zoomCaps; setupCamControls(track); if (!had) restoreZoom(track); } }, ms);
   const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
   const sel = $("#camSelect"); sel.innerHTML = cams.map((c, i) => `<option value="${esc(c.deviceId)}">${esc(c.label || "Camera " + (i + 1))}</option>`).join("");
   sel.value = track.getSettings().deviceId || ""; sel.hidden = cams.length < 2;
@@ -1051,10 +1054,11 @@ function setupCamControls(track) {
     f.value = set.focusDistance ?? (fd.min + fd.max) / 2; showFocus();
   } else { $("#focusVal").textContent = ""; missing.push("focus"); }
   // zoom
-  const z = caps.zoom, zr = $("#zoom"), canZoom = !!(z && z.max > z.min);
+  const z = caps.zoom, canZoom = !!(z && z.max > z.min);
   $("#zoomBox").hidden = !canZoom;
-  if (canZoom) { zr.min = z.min; zr.max = z.max; zr.step = z.step || 0.1; zr.value = set.zoom ?? z.min; $("#zoomVal").textContent = `${(+zr.value).toFixed(1)}×`; }
-  else { $("#zoomVal").textContent = ""; missing.push("zoom"); }
+  zoomCaps = canZoom ? { min: z.min, max: z.max, step: z.step || 0.1 } : null;
+  if (canZoom) { curZoom = set.zoom ?? z.min; showZoom(); }
+  else { curZoom = null; $("#zoomVal").textContent = ""; missing.push("zoom"); }
   $("#camControls").hidden = missing.length === 3;   // show only what this camera allows
   $("#ctlNote").textContent = missing.length ? `Not available on this camera and browser: ${missing.join(", ")}.` : "";
 }
@@ -1072,9 +1076,33 @@ $("#autoFocus").onchange = async () => { ctlTouched = true;
 let focusTimer = 0;
 $("#focus").oninput = () => { ctlTouched = true; showFocus(); clearTimeout(focusTimer);
   focusTimer = setTimeout(() => setTrack({ focusMode: "manual", focusDistance: +$("#focus").value }), 60); };
+/* Zoom: the slider is logarithmic (each part of it multiplies the zoom by the same amount), so the low end, where the
+   card is usually framed, isn't crammed into a few pixels. − and + change it by about 5 %. The zoom is remembered per camera. */
 let zoomTimer = 0;
-$("#zoom").oninput = () => { ctlTouched = true; $("#zoomVal").textContent = `${(+$("#zoom").value).toFixed(1)}×`; clearTimeout(zoomTimer);
-  zoomTimer = setTimeout(() => setTrack({ zoom: +$("#zoom").value }), 60); };
+const zoomSnap = v => { const { min, max, step } = zoomCaps; return Math.min(max, Math.max(min, min + Math.round((v - min) / step) * step)); };
+const zoomFromPos = p => { const { min, max } = zoomCaps; return min > 0 ? min * Math.pow(max / min, p / 1000) : min + (max - min) * p / 1000; };
+const posFromZoom = v => { const { min, max } = zoomCaps; return Math.round(min > 0 ? 1000 * Math.log(v / min) / Math.log(max / min) : 1000 * (v - min) / (max - min)); };
+function showZoom() { if (!zoomCaps || curZoom == null) return; $("#zoom").value = posFromZoom(curZoom); $("#zoomVal").textContent = `${curZoom.toFixed(curZoom < 10 ? 2 : 1)}×`; renderBox(); }
+function setZoom(v, now = false) {
+  if (!zoomCaps) return; ctlTouched = true; curZoom = zoomSnap(v); showZoom(); clearTimeout(zoomTimer);
+  zoomTimer = setTimeout(async () => {
+    if (await setTrack({ zoom: curZoom })) {
+      try { const id = stream?.getVideoTracks()[0]?.getSettings().deviceId || "", m = JSON.parse(localStorage.getItem("scanZoom") || "{}"); m[id] = curZoom; localStorage.setItem("scanZoom", JSON.stringify(m)); } catch {}
+    }
+  }, now ? 0 : 60);
+}
+$("#zoom").oninput = () => { if (zoomCaps) setZoom(zoomFromPos(+$("#zoom").value)); };
+$("#zoomIn").onclick = () => { if (zoomCaps) setZoom(Math.max(curZoom * 1.05, curZoom + zoomCaps.step), true); };
+$("#zoomOut").onclick = () => { if (zoomCaps) setZoom(Math.min(curZoom / 1.05, curZoom - zoomCaps.step), true); };
+/** The zoom used last time with this camera, if it can zoom. */
+function restoreZoom(track) {
+  if (!zoomCaps) return;
+  let m = {}; try { m = JSON.parse(localStorage.getItem("scanZoom") || "{}"); } catch {}
+  const v = m[track.getSettings?.().deviceId || ""];
+  if (typeof v === "number" && Math.abs(v - curZoom) > 0.001) setZoom(v, true);   // counts as a change by the user, so the later re-checks keep it
+}
+$("#copyDiag").onclick = () => { const t = `${$("#ver").textContent} · ${$("#status").textContent} · ${$("#diag").textContent}`;
+  navigator.clipboard?.writeText(t).then(() => $("#idxMsg").textContent = "Diagnostics copied.", () => $("#idxMsg").textContent = "Couldn't copy; select the line and copy it."); };
 $("#capture").onclick = () => { choosing = false; armed = false; lastShot = cardRect ? thumb() : null; movedSince = 0; scan("manual"); };   // an explicit capture ends a pending choice
 /** Raw camera information, to see what the browser actually offers. */
 $("#camDetails").onclick = () => {
