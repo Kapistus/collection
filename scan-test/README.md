@@ -10,7 +10,9 @@ A standalone test page for scanning Magic cards with a phone camera or webcam. I
 2. **Mode** (remembered) decides which frame is read once the card has been found and still for about half a second:
    - **1: first still frame** reads that frame right away. Fastest.
    - **2: sharpest of 6 frames** looks at about 6 frames over 0.7 s and reads the sharpest (measured on the name and set areas). Helps when autofocus is still settling. The log has a Mode column and keeps separate statistics for each mode, so they can be compared.
-   - **3: photo if needed** reads the video frame first; if that doesn't identify the card, it takes a real photo with the camera (much higher resolution and the phone's still-photo processing, typically 0.5–1.5 s more) and reads that. The result shows the photo's size, how long it took and whether it was used. Needs a browser that can take photos from a web page (mostly Chrome on Android); otherwise it says so and works like mode 1.
+   - **3: video, photo after 2 misses** reads the video frame; if that doesn't identify the card, it reads a second frame; if that misses too, it takes a real photo with the camera (much higher resolution and the phone's still-photo processing, typically 0.5–1.5 s more) and reads that. The result shows the photo's size, how long it took and whether it was used.
+   - **4: photo only** reads every card from a real photo: slowest, sharpest.
+   Photos need a browser that can take them from a web page (mostly Chrome on Android); otherwise the page says so and reads the video frame.
 
    Then the page looks at two generous areas (the dashed boxes), finds the text lines inside them (rows with many light/dark changes), and reads each line as a tight strip with [Tesseract.js](https://github.com/naptha/tesseract.js), which runs in the browser:
    - the **name** area: the lines are tried from the top until one reads as a name,

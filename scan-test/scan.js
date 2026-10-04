@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-2";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-3";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -708,7 +708,7 @@ function sharpness(snap) {
   }
   return total;
 }
-let mode = (() => { try { return [1, 2, 3].includes(+localStorage.getItem("scanMode")) ? +localStorage.getItem("scanMode") : 1; } catch { return 1; } })();
+let mode = (() => { try { return [1, 2, 3, 4].includes(+localStorage.getItem("scanMode")) ? +localStorage.getItem("scanMode") : 1; } catch { return 1; } })();
 document.querySelector(`input[name=mode][value="${mode}"]`).checked = true;
 document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => {
   mode = +r.value; try { localStorage.setItem("scanMode", String(mode)); } catch {}
@@ -747,22 +747,33 @@ async function scan(trigger = "auto") {
       return { nm, st, names, name: names[0] || "", info, res: names.length || info.num ? localIdentify(names, info) : null };
     };
     const rank = r => !r ? -1 : r.card ? 2 : r.how === "choose" ? 1 : 0;
-    let R = await readSnap(snap), used = snap.frame ? "frame + border" : "outer edge", photoNote = "";
-    if (useMode === 3 && rank(R.res) < 2 && R.res?.why !== "noindex") {
-      if (!photoSupported()) photoNote = "photo not supported by this browser";
-      else {
-        status("Taking a photo for a sharper read…");
-        try {
-          const ph = await photoSnapshot();
-          if (ph?.failed) photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s: ${ph.failed}`;
-          else if (ph) {
-            status("Reading the photo…");
-            const R2 = await readSnap(ph);
-            const better = rank(R2.res) > rank(R.res);
-            photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s, ${better ? "used" : "no better than the video"}`;
-            if (better) { R = R2; used = (ph.frame ? "frame + border" : "outer edge") + ", from the photo"; }
-          }
-        } catch (e) { photoNote = "photo failed: " + (e?.message || e?.name || e); }
+    let R = null, used = snap.frame ? "frame + border" : "outer edge", photoNote = "";
+    const tryPhoto = async () => {                    // take a real photo and read it; keep it if it's better
+      if (!photoSupported()) { photoNote = "photo not supported by this browser"; return; }
+      status("Taking a photo for a sharper read…");
+      try {
+        const ph = await photoSnapshot();
+        if (ph?.failed) { photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s: ${ph.failed}`; return; }
+        status("Reading the photo…");
+        const R2 = await readSnap(ph), better = !R || rank(R2.res) > rank(R.res);
+        photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s, ${better ? "used" : "no better than the video"}`;
+        if (better) { R = R2; used = (ph.frame ? "frame + border" : "outer edge") + ", from the photo"; }
+      } catch (e) { photoNote = "photo failed: " + (e?.message || e?.name || e); }
+    };
+    if (useMode === 4) {                              // photo only (the video frame only if no photo can be taken)
+      await tryPhoto();
+      if (!R) { R = await readSnap(snap); photoNote += ", read the video frame instead"; }
+    } else {
+      R = await readSnap(snap);
+      if (useMode === 3 && rank(R.res) < 2 && R.res?.why !== "noindex") {
+        // mode 3: a second video frame first; a photo only if that misses too (two misses in a row)
+        status("Not identified: trying another frame…");
+        await sleep(150); updateCard();
+        if (cardRect) {
+          const again = await readSnap(snapshotCard());
+          if (rank(again.res) > rank(R.res)) R = again;
+        }
+        if (rank(R.res) < 2) await tryPhoto(); else photoNote = "second video frame worked, no photo needed";
       }
     }
     const { nm, st, names, name, info } = R, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
@@ -903,7 +914,7 @@ function renderLog() {
       `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span>` +
       `</div>`;
   };
-  const modes = [1, 2, 3].filter(m => log.some(l => l.mode === m));
+  const modes = [1, 2, 3, 4].filter(m => log.some(l => l.mode === m));
   $("#stats").innerHTML = !log.length ? `<span class="hint">Nothing yet.</span>`
     : modes.length > 1 ? modes.map(m => line(log.filter(l => l.mode === m), `<b>Mode ${m}:</b> `)).join("") + line(log, "<b>All:</b> ")
     : line(log, modes.length ? `<b>Mode ${modes[0]}:</b> ` : "");
