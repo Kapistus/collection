@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-1";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-2";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -97,13 +97,13 @@ function cardRectInSource() {
    Works for a card held roughly upright (up to about 5° tilt), at any distance and position. */
 const DET_W = 320;
 let cardRect = null, detMiss = 0, detCov = 0, cardAlt = null, cardIsFrame = false;
-function detectCard() {
-  const [sw, sh] = srcSize(); if (!sw || !sh) return null;
+function detectCard(src = srcEl(), [sw, sh] = srcSize()) {
+  if (!sw || !sh) return null;
   const W = DET_W, H = Math.max(40, Math.round(DET_W * sh / sw));
   const cv = detectCard.cv || (detectCard.cv = document.createElement("canvas"));
   if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
   const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
-  g.drawImage(srcEl(), 0, 0, W, H);
+  g.drawImage(src, 0, 0, W, H);
   const d = g.getImageData(0, 0, W, H).data, n = W * H, gray = new Float32Array(n);
   for (let i = 0; i < n; i++) gray[i] = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000;
   const sx = new Float32Array(n), sy = new Float32Array(n), col = new Float32Array(W), row = new Float32Array(H);
@@ -645,16 +645,49 @@ function readBox(r, a) {
   const x0 = Math.min(r.x, a.x), y0 = Math.min(r.y, a.y);
   return { x: x0, y: y0, w: Math.max(r.x + r.w, a.x + a.w) - x0, h: Math.max(r.y + r.h, a.y + a.h) - y0 };
 }
-function snapshotCard() {
-  const [sw, sh] = srcSize(), r = cardRectInSource(), a = cardRect && cardAlt ? cardAlt : null;
+function snapshotCard(src = srcEl(), [sw, sh] = srcSize(), r = cardRectInSource(), a = cardRect && cardAlt ? cardAlt : null, frame = cardIsFrame) {
   const ux0 = Math.min(r.x, a ? a.x : r.x), uy0 = Math.min(r.y, a ? a.y : r.y);
   const ux1 = Math.max(r.x + r.w, a ? a.x + a.w : 0), uy1 = Math.max(r.y + r.h, a ? a.y + a.h : 0);
   const x = Math.max(0, Math.floor(ux0)), y = Math.max(0, Math.floor(uy0));
   const w = Math.max(1, Math.min(sw, Math.ceil(ux1)) - x), h = Math.max(1, Math.min(sh, Math.ceil(uy1)) - y);
   const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
-  cv.getContext("2d").drawImage(srcEl(), x, y, w, h, 0, 0, w, h);
+  cv.getContext("2d").drawImage(src, x, y, w, h, 0, 0, w, h);
   const rel = q => ({ x: q.x - x, y: q.y - y, w: q.w, h: q.h });
-  return { cv, rect: rel(r), alt: a ? rel(a) : null, box: rel(readBox(r, a)), frame: cardIsFrame };
+  return { cv, rect: rel(r), alt: a ? rel(a) : null, box: rel(readBox(r, a)), frame };
+}
+/* Mode 3: if the video frame doesn't give a result, take a real photo with the camera (ImageCapture.takePhoto, mostly
+   Chrome on Android): much higher resolution and the phone's still-photo processing, at the cost of 0.5-1.5 s. */
+const photoSupported = () => "ImageCapture" in window && !!stream?.getVideoTracks()[0];
+let imageCap = null, imageCapTrack = null;
+async function photoSnapshot() {
+  const track = stream?.getVideoTracks()[0]; if (!track || !("ImageCapture" in window)) return null;
+  if (imageCapTrack !== track) {
+    imageCap = new ImageCapture(track); imageCapTrack = track; imageCap.settings = {};
+    try {                                            // the largest photo the camera offers, and no flash
+      const pc = await imageCap.getPhotoCapabilities();
+      if (pc.imageWidth?.max) Object.assign(imageCap.settings, { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight?.max });
+      if ((pc.fillLightMode || []).includes("off")) imageCap.settings.fillLightMode = "off";
+    } catch {}
+  }
+  const t = performance.now();
+  let blob;
+  try { blob = await imageCap.takePhoto(imageCap.settings); } catch { blob = await imageCap.takePhoto(); }   // some cameras refuse settings
+  const bmp = await createImageBitmap(blob);
+  const P = [bmp.width, bmp.height], [vw, vh] = srcSize(), sameShape = Math.abs(P[0] / P[1] - vw / vh) < 0.02;
+  // where's the card in the photo? Box mode: the same place as in the video (the camera doesn't move); otherwise find it again
+  let r = null, a = null, frame = false;
+  if (!(boxActive() && sameShape)) {
+    const d = detectCard(bmp, P);
+    if (d && (!sameShape || !cardRect || Math.abs(d.x / P[0] - cardRect.x / vw) < 0.05)) { r = { x: d.x, y: d.y, w: d.w, h: d.h }; a = d.alt; frame = d.frame; }
+  }
+  if (!r && sameShape && cardRect) {               // same framing as the video: scale the video outline up
+    const k = P[0] / vw, sc = q => q && { x: q.x * k, y: q.y * k, w: q.w * k, h: q.h * k };
+    r = sc(cardRect); a = sc(cardAlt); frame = cardIsFrame;
+  }
+  if (!r) { bmp.close?.(); return { ms: performance.now() - t, size: P, failed: "card not found in the photo" }; }
+  const snap = snapshotCard(bmp, P, r, a, frame);
+  bmp.close?.();
+  return Object.assign(snap, { ms: performance.now() - t, size: P });
 }
 /** Sharpness of the two read areas: variance of the Laplacian (higher = sharper edges). */
 function sharpness(snap) {
@@ -675,7 +708,7 @@ function sharpness(snap) {
   }
   return total;
 }
-let mode = (() => { try { return localStorage.getItem("scanMode") === "2" ? 2 : 1; } catch { return 1; } })();
+let mode = (() => { try { return [1, 2, 3].includes(+localStorage.getItem("scanMode")) ? +localStorage.getItem("scanMode") : 1; } catch { return 1; } })();
 document.querySelector(`input[name=mode][value="${mode}"]`).checked = true;
 document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => {
   mode = +r.value; try { localStorage.setItem("scanMode", String(mode)); } catch {}
@@ -708,16 +741,37 @@ async function scan(trigger = "auto") {
     const w = await getWorkers();
     status("Reading…");
     const codes = indexSets();
-    const [nm, st] = await Promise.all([readName(w, snap), readSet(w, snap, codes)]);
-    const names = nm.names, name = names[0] || "", info = st.info, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
-    const used = snap.frame ? "frame + border" : "outer edge";
-    let res = null;
-    if (names.length || info.num) res = localIdentify(names, info);
+    const readSnap = async sn => {
+      const [nm, st] = await Promise.all([readName(w, sn), readSet(w, sn, codes)]);
+      const names = nm.names, info = st.info;
+      return { nm, st, names, name: names[0] || "", info, res: names.length || info.num ? localIdentify(names, info) : null };
+    };
+    const rank = r => !r ? -1 : r.card ? 2 : r.how === "choose" ? 1 : 0;
+    let R = await readSnap(snap), used = snap.frame ? "frame + border" : "outer edge", photoNote = "";
+    if (useMode === 3 && rank(R.res) < 2 && R.res?.why !== "noindex") {
+      if (!photoSupported()) photoNote = "photo not supported by this browser";
+      else {
+        status("Taking a photo for a sharper read…");
+        try {
+          const ph = await photoSnapshot();
+          if (ph?.failed) photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s: ${ph.failed}`;
+          else if (ph) {
+            status("Reading the photo…");
+            const R2 = await readSnap(ph);
+            const better = rank(R2.res) > rank(R.res);
+            photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s, ${better ? "used" : "no better than the video"}`;
+            if (better) { R = R2; used = (ph.frame ? "frame + border" : "outer edge") + ", from the photo"; }
+          }
+        } catch (e) { photoNote = "photo failed: " + (e?.message || e?.name || e); }
+      }
+    }
+    const { nm, st, names, name, info } = R, crops = [nm.cv, st.cv], rn = { data: nm.data }, rs = { data: st.data };
+    let res = R.res;
     const t1 = performance.now();
     if (!name && !info.num && trigger === "auto") { status("No card text found. Hold the card upright, closer, in good light.", "warn"); return; }
     res ||= { card: null, how: "fail" };
     const t2 = performance.now();
-    current = { name: res?.nameUsed || name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used };
+    current = { name: res?.nameUsed || name, info, res, raw: { name: rn.data, set: rs.data }, crops, ms: { read: t1 - t0, lookup: t2 - t1 }, entry: null, mode: useMode, sharp: snap.sharp, used, photoNote };
     if (res.card) { addLog(res.card, res.how, t2 - t0); blip(); }
     else if (res.how === "fail") addLog(null, "fail", t2 - t0, name || info.sets.join("/") || "(nothing read)");
     renderResult();
@@ -731,8 +785,6 @@ async function scan(trigger = "auto") {
 }
 
 // ------------------------------------------------------------------ sound
-/* A short blip when a card is identified (Web Audio, no sound file). Browsers only allow sound after a tap,
-   so the audio is unlocked when the camera is started. */
 /* Sound: a short WAV made in the page, played through an <audio> element like any media (the most dependable way on
    phones), with Web Audio as a backup. Optional vibration (Android). Browsers only allow sound after a tap on the page. */
 let audio = null, lastSound = "not played yet";
@@ -807,7 +859,7 @@ function renderResult() {
   $("#result").innerHTML = card
     ? `<div class="result"><img src="${esc(img(card))}" alt=""><div><div class="name">${esc(card.printed_name || card.name)}</div>
         <div>${esc(card.set_name)} · ${esc(card.set.toUpperCase())} #${esc(card.collector_number)}${card.lang !== "en" ? " · " + esc(card.lang.toUpperCase()) : ""}</div>
-        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}</p></div></div>`
+        <p>${tag(c.res.how)}</p><p class="hint">Mode ${c.mode} · ${Math.round(c.ms.read + c.ms.lookup)} ms${c.sharp != null ? ` · sharpness ${Math.round(c.sharp)}` : ""}${c.used ? ` · card edge: ${esc(c.used)}` : ""}${c.photoNote ? ` · ${esc(c.photoNote)}` : ""}</p></div></div>`
     : `<p>${tag(c.res.how)}</p>` + (c.res.named ? `<p><b>${esc(c.res.named.name)}</b>: ${c.res.prints.length} printings.</p>` : "");
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   choosing = !pw.hidden;                            // automatic scanning pauses until a printing is chosen or skipped
@@ -822,7 +874,7 @@ function renderResult() {
     div.innerHTML = `<b>${label}</b> <span class="hint">confidence ${Math.round(r.confidence)}%</span><br>`;
     div.append(cv); div.insertAdjacentHTML("beforeend", `<br><code>${esc(r.text.trim() || "(nothing)")}</code>`); $("#crops").append(div);
   });
-  $("#crops").insertAdjacentHTML("beforeend", `<code>Card edge: ${esc(c.used || "–")} · Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")} · Language: ${esc(c.info.lang || "–")}</code>`);
+  $("#crops").insertAdjacentHTML("beforeend", `<code>${c.photoNote ? "Photo: " + esc(c.photoNote) + " · " : ""}Card edge: ${esc(c.used || "–")} · Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")} · Language: ${esc(c.info.lang || "–")}</code>`);
 }
 $("#picker").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-id]"); if (!b || !current?.res.prints) return;
@@ -851,10 +903,10 @@ function renderLog() {
       `<span>✖ not recognised: ${count("fail")}${pct(count("fail"))}</span> · <span>average ${(rows.reduce((s, l) => s + l.ms, 0) / t / 1000).toFixed(1)} s</span>` +
       `</div>`;
   };
-  const m1 = log.filter(l => l.mode === 1), m2 = log.filter(l => l.mode === 2);
+  const modes = [1, 2, 3].filter(m => log.some(l => l.mode === m));
   $("#stats").innerHTML = !log.length ? `<span class="hint">Nothing yet.</span>`
-    : (m1.length && m2.length) ? line(m1, "<b>Mode 1:</b> ") + line(m2, "<b>Mode 2:</b> ") + line(log, "<b>All:</b> ")
-    : line(log, m2.length ? "<b>Mode 2:</b> " : m1.length ? "<b>Mode 1:</b> " : "");
+    : modes.length > 1 ? modes.map(m => line(log.filter(l => l.mode === m), `<b>Mode ${m}:</b> `)).join("") + line(log, "<b>All:</b> ")
+    : line(log, modes.length ? `<b>Mode ${modes[0]}:</b> ` : "");
 }
 $("#copyLog").onclick = async () => {
   const text = [...log].reverse().filter(l => l.set).map(l => `1 ${l.name} (${l.set}) ${l.cn}`).join("\n");
@@ -1014,7 +1066,7 @@ function step() {
   if (!busy) updateCard();
   drawOverlay();
   if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
-    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = "no card found in the picture"; diag();
+    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = choosing ? "paused until you choose the printing or skip" : "no card found in the picture"; diag();
     if (++goneFor >= (boxActive() ? 8 : 5) && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
     return;
   }

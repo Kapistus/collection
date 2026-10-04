@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card Scanner Test</title>
-<meta name="app-version" content="scan-test 2026.10.04-1">
+<meta name="app-version" content="scan-test 2026.10.04-2">
 <style>
 :root { --bg: #f4f3f0; --fg: #1d1d1f; --muted: #6b6b70; --line: #d9d6cf; --card: #fff; --accent: #5b3fa8; --ok: #1f7a3d; --warn: #9a6200; --bad: #b3261e; }
 @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --fg: #ececf0; --muted: #a0a0a8; --line: #34343a; --card: #222226; --accent: #a58cf0; --ok: #5fc27e; --warn: #e0a640; --bad: #f07a70; } }
@@ -78,6 +78,7 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
       <span class="ctl mode" role="radiogroup" aria-label="Capture mode"><b>Mode</b>
         <label class="check" title="Read the first frame where the card is still. Fastest."><input type="radio" name="mode" value="1"> 1: first still frame</label>
         <label class="check" title="Look at about 6 frames over 0.7 s and read the sharpest. Helps when autofocus is still settling."><input type="radio" name="mode" value="2"> 2: sharpest of 6 frames</label>
+        <label class="check" title="Read the video frame first; if that doesn't identify the card, take a real photo (much sharper, 0.5–1.5 s slower) and read that. Mostly Chrome on Android."><input type="radio" name="mode" value="3"> 3: photo if needed</label>
       </span>
     </div>
     <div class="controls">
@@ -123,6 +124,6 @@ td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: lef
   </section>
 </main>
 <script src="vendor/tesseract/tesseract.min.js"></script>
-<script src="scan.js?v=2026.10.04-1"></script>
+<script src="scan.js?v=2026.10.04-2"></script>
 </body>
 </html>
