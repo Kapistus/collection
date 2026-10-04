@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-6";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-7";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -207,9 +207,10 @@ new ResizeObserver(drawOverlay).observe(stage);
 
 // ------------------------------------------------------------------ box mode
 /* For scanning into a box with the phone held still above it. "Calibrate box" takes a picture of the empty box and
-   learns its colour and where it is in the picture. After that the card is found as the part of the box area that
-   isn't box colour (the box's inner walls frame it), which keeps working as the stack of cards grows towards the
-   camera, and capture happens sooner because the picture is steadier. */
+   keeps a small copy of it, its colour and where it is in the picture. After that the card is found as the part of the
+   box area that differs from the empty box in colour or brightness (so white, grey and black boxes work too), which
+   keeps working as the stack of cards grows towards the camera, and capture happens sooner because the picture is
+   steadier. */
 let boxCal = null;
 try { boxCal = JSON.parse(localStorage.getItem("scanBox") || "null"); } catch {}
 const boxZoomOk = () => boxCal?.zoom == null || curZoom == null || Math.abs(boxCal.zoom - curZoom) < 0.02;   // zooming moves the box in the picture
@@ -251,21 +252,52 @@ function calibrateBox() {
     if (x > 0) stack.push(p - 1); if (x < W - 1) stack.push(p + 1); if (y > 0) stack.push(p - W); if (y < H - 1) stack.push(p + W);
   }
   if (n < W * H * 0.05) { status("Couldn't find the box in the middle of the picture. Centre the empty box and try again.", "bad"); return; }
-  boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, zoom: curZoom, at: Date.now() };
+  // a small picture of the empty box: a card is then whatever differs from it in colour or brightness, which also works
+  // for white, grey or black boxes and for shading on the walls
+  const ref = new Uint8Array(W * H * 3);
+  for (let p = 0; p < W * H; p++) { const i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1; ref[p * 3] = Math.min(255, Math.round(s / 3)); ref[p * 3 + 1] = Math.round(d[i] / s * 255); ref[p * 3 + 2] = Math.round(d[i + 1] / s * 255); }
+  boxCal = { c, tol, yMed, grey, region: { x: x0 / W, y: y0 / H, w: (x1 - x0 + 1) / W, h: (y1 - y0 + 1) / H }, vw: video.videoWidth, vh: video.videoHeight, zoom: curZoom, at: Date.now(),
+    ref: { W, H, b64: toB64(ref) } };
   try { localStorage.setItem("scanBox", JSON.stringify(boxCal)); } catch {}
   cardRect = cardAlt = null; prev = null; stillFor = 0; armed = true; renderBox(); drawOverlay();
-  status(grey ? "Box calibrated. Its colour is close to grey, so a brightly coloured box would work more reliably." : "Box calibrated. Slide a card in.", grey ? "warn" : "ok");
+  status("Box calibrated. Slide a card in.", "ok");
+}
+const toB64 = a => { let t = ""; for (let k = 0; k < a.length; k += 8192) t += String.fromCharCode.apply(null, a.subarray(k, k + 8192)); return btoa(t); };
+/** The empty-box picture from the calibration, decoded once (null for old calibrations or another picture size). */
+let boxRefCache = null;
+function boxReference(W, H) {
+  const r = boxCal?.ref; if (!r || r.W !== W || r.H !== H) return null;
+  if (boxRefCache?.b64 !== r.b64) { const bin = atob(r.b64), a = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) a[k] = bin.charCodeAt(k); boxRefCache = { b64: r.b64, a }; }
+  return boxRefCache.a;
 }
 /** The card in box mode: the block of non-box-coloured pixels inside the box area. */
 function detectBoxCard() {
   const { W, H, d } = grabSmall(), R = boxCal.region;
-  const rx0 = Math.max(0, Math.floor((R.x - 0.02) * W)), rx1 = Math.min(W - 1, Math.ceil((R.x + R.w + 0.02) * W));
-  const ry0 = Math.max(0, Math.floor((R.y - 0.02) * H)), ry1 = Math.min(H - 1, Math.ceil((R.y + R.h + 0.02) * H));
+  const rx0 = Math.max(0, Math.floor((R.x - 0.06) * W)), rx1 = Math.min(W - 1, Math.ceil((R.x + R.w + 0.06) * W));
+  const ry0 = Math.max(0, Math.floor((R.y - 0.06) * H)), ry1 = Math.min(H - 1, Math.ceil((R.y + R.h + 0.06) * H));
   const dark = Math.min(35, boxCal.yMed * 0.3), rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
-  const card = new Uint8Array(rw * rh);
-  for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
-    const i = ((y + ry0) * W + x + rx0) * 4;
-    card[y * rw + x] = brightness(d, i) <= dark || chromaDist(d, i, boxCal.c) >= boxCal.tol ? 1 : 0;
+  const card = new Uint8Array(rw * rh), ref = boxReference(W, H);
+  if (ref) {
+    // compared with the empty box: exposure first (the camera brightens or darkens everything as cards come and go),
+    // from the pixels that still look like the empty box
+    const ratios = [];
+    for (let y = 0; y < rh; y += 2) for (let x = 0; x < rw; x += 2) {
+      const p = (y + ry0) * W + x + rx0, i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1;
+      if (Math.abs(d[i] / s - ref[p * 3 + 1] / 255) + Math.abs(d[i + 1] / s - ref[p * 3 + 2] / 255) < boxCal.tol) ratios.push((s / 3 + 8) / (ref[p * 3] + 8));
+    }
+    ratios.sort((p, q) => p - q);
+    const gain = ratios.length > 20 ? Math.min(2, Math.max(0.5, ratios[ratios.length >> 1])) : 1;
+    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+      const p = (y + ry0) * W + x + rx0, i = p * 4, s = d[i] + d[i + 1] + d[i + 2] + 1;
+      const dc = Math.abs(d[i] / s - ref[p * 3 + 1] / 255) + Math.abs(d[i + 1] / s - ref[p * 3 + 2] / 255) + Math.abs(d[i + 2] / s - (255 - ref[p * 3 + 1] - ref[p * 3 + 2]) / 255);
+      const db = Math.abs(Math.log((s / 3 + 8) / (gain * (ref[p * 3] + 8))));
+      card[y * rw + x] = dc >= boxCal.tol || db > 0.4 ? 1 : 0;
+    }
+  } else {                                           // older calibration without the picture: by the box colour only
+    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+      const i = ((y + ry0) * W + x + rx0) * 4;
+      card[y * rw + x] = brightness(d, i) <= dark || chromaDist(d, i, boxCal.c) >= boxCal.tol ? 1 : 0;
+    }
   }
   const touches = (rx, ry) => rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2;
   const run = (vals, thr) => {                        // longest run above thr, allowing 2-pixel gaps
@@ -276,17 +308,29 @@ function detectBoxCard() {
     }
     return best;
   };
-  const rows = []; for (let y = 0; y < rh; y++) { let s = 0; for (let x = 0; x < rw; x++) s += card[y * rw + x]; rows.push(s / rw); }
-  // rows that hold the card: compared with the fullest row, since the box area can be much wider than the card
-  const maxRow = Math.max(...rows), ry = maxRow >= 0.1 ? run(rows, Math.max(0.08, maxRow * 0.5)) : null;
-  if (!ry || ry[1] - ry[0] < rh * 0.2) { boxWhy = "nothing different from the box colour in the box area"; return null; }
-  const cols = []; for (let x = 0; x < rw; x++) { let s = 0; for (let y = ry[0]; y <= ry[1]; y++) s += card[y * rw + x]; cols.push(s / (ry[1] - ry[0] + 1)); }
-  const rx = run(cols, 0.5); if (!rx) { boxWhy = "no card-wide block in the box area"; return null; }
+  /* The card's outline, row by row: from the first to the last card pixel of each row. The card's dark border marks
+     both sides even where the inside of the card looks like the box (a white text box on a white box). */
+  const first = new Int32Array(rh).fill(-1), last = new Int32Array(rh).fill(-1), spans = [];
+  for (let y = 0; y < rh; y++) {
+    const o = y * rw;
+    for (let x = 0; x < rw - 1; x++) if (card[o + x] && card[o + x + 1]) { first[y] = x; break; }   // two in a row: not noise
+    for (let x = rw - 1; x > 0; x--) if (card[o + x] && card[o + x - 1]) { last[y] = x; break; }
+    spans.push(first[y] >= 0 ? last[y] - first[y] + 1 : 0);
+  }
+  const sorted = spans.slice().sort((p, q) => p - q), wide = sorted[Math.floor(rh * 0.9)];   // a typical wide row
+  if (wide < rw * 0.08) { boxWhy = "nothing in the box area differs from the empty box"; return null; }
+  const ry = run(spans, wide * 0.7 - 0.5);
+  if (!ry || ry[1] - ry[0] < rh * 0.2) { boxWhy = "nothing card-sized in the box area differs from the empty box"; return null; }
+  const med = a => a.sort((p, q) => p - q)[a.length >> 1], F = [], L = [];
+  for (let y = ry[0]; y <= ry[1]; y++) if (first[y] >= 0) { F.push(first[y]); L.push(last[y]); }
+  const rx = [med(F), med(L)];
   const w = rx[1] - rx[0] + 1, h = ry[1] - ry[0] + 1;
   if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.18) {   // not card-shaped (a hand, or the card is still sliding)
     boxWhy = `the block isn't card-shaped (width/height ${(w / h).toFixed(2)}, a card is ${CARD_RATIO.toFixed(2)}${touches(rx, ry) ? "; it reaches the edge of the picture: zoom out a little" : ""})`; return null; }
-  let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) for (let x = rx[0]; x <= rx[1]; x++) fill += card[y * rw + x];
-  fill /= w * h; if (fill < 0.75) { boxWhy = `only ${Math.round(fill * 100)}% of the block differs from the box colour (needs 75%): parts of the card look like the box`; return null; }
+  // straight sides: most rows start and end where the card's sides are
+  const tolX = Math.max(2, w * 0.06);
+  let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) if (Math.abs(first[y] - rx[0]) <= tolX && Math.abs(last[y] - rx[1]) <= tolX) fill++;
+  fill /= h; if (fill < 0.75) { boxWhy = `the sides of the block aren't straight (${Math.round(fill * 100)}% of rows fit, needs 75%): a card still moving, or a hand`; return null; }
   boxWhy = "";
   const k = srcSize()[0] / W;
   return { x: (rx[0] + rx0) * k, y: (ry[0] + ry0) * k, w: w * k, h: h * k, cov: fill, frame: false, alt: null,
@@ -733,7 +777,8 @@ async function photoSnapshot() {
 }
 /** A small grey copy of an area, with brightness and contrast evened out, to compare the same card in two pictures. */
 function normThumb(src, q, W = 24, H = 34) {
-  const cv = normThumb.cv || (normThumb.cv = Object.assign(document.createElement("canvas"), { width: W, height: H }));
+  const cv = normThumb.cv || (normThumb.cv = document.createElement("canvas"));
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
   const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
   g.clearRect(0, 0, W, H); g.drawImage(src, q.x, q.y, q.w, q.h, 0, 0, W, H);
   const d = g.getImageData(0, 0, W, H).data, v = new Float32Array(W * H);
@@ -865,7 +910,7 @@ async function scan(trigger = "auto") {
       res.card ? "ok" : res.how === "choose" ? "warn" : "bad");
   } catch (err) {
     console.error(err); status("Error: " + err.message, "bad");
-  } finally { busy = false; $("#capture").disabled = !source; }
+  } finally { busy = false; $("#capture").disabled = !source; quietUntil = performance.now() + 700; }
 }
 
 // ------------------------------------------------------------------ sound
@@ -1149,7 +1194,7 @@ function restoreZoom(track) {
 }
 $("#copyDiag").onclick = () => { const t = `${$("#ver").textContent} · ${$("#status").textContent} · ${$("#diag").textContent}`;
   navigator.clipboard?.writeText(t).then(() => $("#idxMsg").textContent = "Diagnostics copied.", () => $("#idxMsg").textContent = "Couldn't copy; select the line and copy it."); };
-$("#capture").onclick = () => { choosing = false; armed = false; lastShot = cardRect ? thumb() : null; movedSince = 0; scan("manual"); };   // an explicit capture ends a pending choice
+$("#capture").onclick = () => { choosing = false; armed = false; lastSig = cardRect ? cardSig(cardRect) : null; scan("manual"); };   // an explicit capture ends a pending choice
 /** Raw camera information, to see what the browser actually offers. */
 $("#camDetails").onclick = () => {
   const track = stream?.getVideoTracks()[0], pre = $("#camDump");
@@ -1161,43 +1206,61 @@ $("#camDetails").onclick = () => {
   navigator.clipboard?.writeText(pre.textContent).then(() => $("#ctlNote").textContent = "Camera details copied to the clipboard.", () => {});
 };
 
-// automatic capture: when the picture inside the outline has been still for ~0.6 s, and it changed since the last scan
+// automatic capture: when the card has been still for a moment, and it's a different card from the one scanned last
 const MIN_CARD_PX = 400;                          // card height in camera pixels needed to read the name
 const STILL = 12;                                 // average brightness change per pixel (0–255) that still counts as "not moving"
-let armed = true, prev = null, stillFor = 0, lastShot = null, goneFor = 0, movedSince = 0, autoWhy = "";
-/* A new card is recognised in two ways: the picture inside the outline clearly moved since the last capture (a card
-   slid in, or was swapped), or it differs from the card captured last. Either one re-arms automatic capture. */
-const MOVED = () => boxActive() ? 15 : 25;            // movement that counts as "something happened"
+const SAME = 0.8;                                 // art-area match (0–1) above which it's the card scanned last
+let armed = true, prev = null, prevN = null, stillFor = 0, lastSig = null, goneFor = 0, autoWhy = "", quietUntil = 0, lastSame = 0;
+/* A card is scanned once. Automatic capture is ready again when
+   - the card was gone from the picture for a moment (taken out), or
+   - something clearly moved through the outline (the next card sliding in): the picture changed in shape, not just in
+     brightness, so exposure and focus changes after a photo don't count, or
+   - the still card's art differs from the card scanned last (a quick swap). */
+const SLID = 0.5;                                 // picture-to-picture match below this = something moved through the outline
+/** The art area of the card, small, blurred and with brightness evened out: the same card matches even when lit a bit
+   differently or shifted a little; a different card doesn't. */
+function cardSig(q, dx = 0, dy = 0) {
+  return normThumb(srcEl(), { x: q.x + q.w * (0.08 + dx), y: q.y + q.h * (0.11 + dy), w: q.w * 0.84, h: q.h * 0.44 }, 16, 12);
+}
+function sameAsLast(q) {                           // best match over small shifts (the outline isn't exact)
+  if (!lastSig) return 0;
+  let best = -1;
+  for (const dx of [-0.03, -0.015, 0, 0.015, 0.03]) for (const dy of [-0.03, -0.015, 0, 0.015, 0.03]) best = Math.max(best, picSimilarity(lastSig, cardSig(q, dx, dy)));
+  return best;
+}
 // box mode: the phone and the box don't move, so check more often and need a shorter still moment (~0.25 s instead of ~0.6 s)
 const tick = () => setTimeout(() => { try { step(); } finally { tick(); } }, boxActive() ? 120 : 200);
 function step() {
   if (source !== "video" || !video.videoWidth) return;
   if (!busy) updateCard();
   drawOverlay();
-  if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
-    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = choosing ? "paused until you choose the printing or skip" : boxActive() && boxWhy ? `no card found: ${boxWhy}` : "no card found in the picture"; diag();
-    if (++goneFor >= (boxActive() ? 8 : 5) && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
+  const quiet = busy || performance.now() < quietUntil;   // during and just after a scan the picture may jump: ignore it
+  if (!cardRect) {
+    prev = null; prevN = null; stillFor = 0; motion = null; autoWhy = choosing ? "paused until you choose the printing or skip" : boxActive() && boxWhy ? `no card found: ${boxWhy}` : "no card found in the picture"; diag();
+    if (!quiet && ++goneFor >= 2 && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
     return;
   }
   goneFor = 0;
-  const t = thumb();
+  const t = thumb(), tn = normThumb(srcEl(), cardRect);
   motion = prev ? diff(t, prev) : null; prev = t;
-  if (motion !== null) movedSince = Math.max(movedSince, motion);
+  const shapeMatch = prevN ? picSimilarity(tn, prevN) : 1; prevN = tn;
+  if (!quiet && !armed && shapeMatch < SLID) armed = true;
   if (!$("#auto").checked) { autoWhy = "off"; diag(); return; }
   if (choosing) { autoWhy = "paused until you choose the printing or skip"; diag(); return; }
   if (busy) { autoWhy = "reading…"; diag(); return; }
-  if (!armed) {
-    const changed = lastShot ? diff(t, lastShot) : 99;
-    if (movedSince > MOVED() || changed > 10) { armed = true; stillFor = 0; status("Hold the card still…"); }
-    else { autoWhy = `waiting for a new card (difference from the last one ${changed.toFixed(0)}, needs 10; or movement)`; diag(); return; }
-  }
+  if (quiet) { stillFor = 0; autoWhy = "settling after the scan"; diag(); return; }
   if (cardRect.h < MIN_CARD_PX) { stillFor = 0; autoWhy = `card too small in the picture (${Math.round(cardRect.h)} px tall, needs ${MIN_CARD_PX}): move the camera closer`; diag(); return; }
   if (detMiss > 2) { stillFor = 0; autoWhy = "card not found in the last frames"; diag(); return; }
   if (detMiss > 0) { autoWhy = "card not found in this frame (keeps waiting)"; diag(); return; }   // one missed frame doesn't restart the wait
   stillFor = motion !== null && motion < STILL ? stillFor + 1 : 0;
   const need = boxActive() ? 2 : 3;
-  autoWhy = `waiting for a still card (${stillFor}/${need}, movement ${motion == null ? "–" : motion.toFixed(1)}, still below ${STILL})`; diag();
-  if (stillFor >= need) { armed = false; lastShot = t; stillFor = 0; movedSince = 0; scan("auto"); }
+  if (stillFor < need) { autoWhy = `waiting for a still card (${stillFor}/${need}, movement ${motion == null ? "–" : motion.toFixed(1)}, still below ${STILL})`; diag(); return; }
+  if (!armed) {                                    // still, but is it a new card?
+    lastSame = sameAsLast(cardRect);
+    if (lastSame >= SAME) { autoWhy = `same card as the last scan (art match ${Math.round(lastSame * 100)}%): slide in the next card`; diag(); return; }
+    armed = true;
+  }
+  armed = false; lastSig = cardSig(cardRect); stillFor = 0; scan("auto");
 }
 tick();
 

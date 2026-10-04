@@ -48,10 +48,12 @@ For scanning into a box (for example a 3D-printed box the cards slide into) with
 
 1. Fix the phone so the empty box is in the middle of the picture.
 2. Tap **Calibrate box**. The page takes a picture of the empty box and learns its colour and where it is (shown as a thin dotted outline). The calibration is remembered; tap **Recalibrate box** if the phone or the box moves, and **Box mode off** to go back to hand-held scanning.
-3. Slide cards in. The card is found as the part of the box area that isn't box colour, so the outline follows the stack as it grows towards the camera. Capture starts about 0.3 s after a new card stops moving (hand-held: about 0.6–0.8 s).
+3. Slide cards in. The card is found as the part of the box area that differs from the empty box in colour or brightness (the calibration keeps a small picture of the empty box), so white, grey and black boxes work, and the outline follows the stack as it grows towards the camera. The card's outline is traced row by row from its dark border, so a light card on a light box is still found. Capture starts about 0.3 s after a new card stops moving (hand-held: about 0.6–0.8 s).
 4. When the stack reaches the edge of the picture, the page says so: empty the box.
 
 The box area may be much wider than the card; the card is the block that clearly differs from the box colour. When no card is found, the diagnostics line says why (nothing different from the box colour, a block that isn't card-shaped, or a card that partly looks like the box).
+
+**Each card is scanned once.** Automatic capture is ready again only when the card was gone from the picture for a moment, when something clearly moved through the outline (the next card sliding in), or when the still card's art differs from the one scanned last. Brightness and focus changes (for example right after a photo) don't count, and for 0.7 s after each scan the picture is ignored. A card left in place shows "same card as the last scan" in the diagnostics. Two identical cards in a row are scanned when the second one slides in; if one is missed, use **Capture now**.
 
 **Photos in box mode:** phones usually take photos in a different shape from the video (for example 4:3 photos, 16:9 video), so the photo shows more around the video picture. The card outline found in the video is moved into the photo and checked against it (with and without the zoom, and small shifts); the result says "photo matched to the video". Only if that check fails is the card searched for again in the photo.
 
