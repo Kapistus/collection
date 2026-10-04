@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-3";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-4";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -18,7 +18,7 @@ const CARD_RATIO = 63 / 88;                       // width / height of a Magic c
    lines of text; the reader picks the lines out. */
 const ZONES = {
   name: { x: 0.03, y: 0.005, w: 0.80, h: 0.135, label: "name", px: 160 },
-  set:  { x: 0.02, y: 0.830, w: 0.62, h: 0.170, label: "set · number", px: 300 },
+  set:  { x: 0.02, y: 0.830, w: 0.96, h: 0.170, label: "set · number", px: 300 },
 };
 const LANGS = ["EN", "DE", "FR", "IT", "ES", "PT", "JA", "KO", "RU", "ZHS", "ZHT", "PH"];
 const abs = p => new URL(p, location.href).href;
@@ -323,7 +323,7 @@ function boxBlur(src, w, h, r) {
 /** Cut out a strip of the picture, scale it to height dh, and make it dark text on a light background.
     "local" (default) compares every pixel with its own surroundings, so glare, shadows and dim light across the strip
     don't wash the letters out; "global" stretches the contrast of the whole strip at once (used as a second try). */
-function stripCanvas(src, sx, sy, sw, sh, dh, how = "local") {
+function stripCanvas(src, sx, sy, sw, sh, dh, how = "local", text = "auto") {
   const dw = Math.max(8, Math.round(dh * sw / sh)), pad = 14;
   const cv = document.createElement("canvas"); cv.width = dw + 2 * pad; cv.height = dh + 2 * pad;
   const g = cv.getContext("2d", { willReadFrequently: true });
@@ -338,7 +338,7 @@ function stripCanvas(src, sx, sy, sw, sh, dh, how = "local") {
     const bgr = boxBlur(sm, dw, dh, Math.max(4, Math.round(Math.min(dh, 70) * 0.45)));   // the local background
     const hp = new Float32Array(n); for (let i = 0; i < n; i++) hp[i] = sm[i] - bgr[i];
     const [lo, hi] = pctOf(hp, [0.02, 0.98]);
-    const t = new Float32Array(n), dark = -lo >= hi;                           // the text is the stronger tail: darker or lighter than its surroundings
+    const t = new Float32Array(n), dark = text === "dark" ? true : text === "light" ? false : -lo >= hi;   // the text is the stronger tail, unless told
     for (let i = 0; i < n; i++) t[i] = dark ? -hp[i] : hp[i];
     const [nf, top] = pctOf(t, [0.6, 0.985]), span = Math.max(top - nf, 4);
     out = new Float32Array(n); for (let i = 0; i < n; i++) out[i] = 255 - Math.min(1, Math.max(0, (t[i] - nf) / span)) * 255;
@@ -389,7 +389,10 @@ function setVariants(tok) {
 /** Collector number, set code candidates (checked against the sets in the card index) and language from the bottom-left line. */
 function parseSetLine(t, codes) {
   const text = t.toUpperCase().replace(/[•·*]/g, " • ");
-  const num = (/(?:^|\s)0*(\d{1,4})(?:\s*\/\s*\d{1,4})?(?=\s|$)/m.exec(text) || [])[1] || "";
+  // the copyright year ("™ & © 2024 Wizards of the Coast") isn't a collector number
+  const noYear = text.replace(/(©|@|\(C\))\s*(19|20)\d\d/g, " ").replace(/(19|20)\d\d\s*WIZARD/g, " ");
+  const nums = [...noYear.matchAll(/(?:^|\s)0*(\d{1,4})(?:\s*\/\s*\d{1,4})?(?=\s|$)/gm)].map(m => m[1]).filter((v, i, a) => a.indexOf(v) === i);
+  const num = nums[0] || "";
   const toks = text.split(/[^A-Z0-9]+/).filter(Boolean);
   let lang = "", sets = [], unknown = "";
   for (let i = 0; i < toks.length; i++) {
@@ -401,7 +404,7 @@ function parseSetLine(t, codes) {
     if (hit) { if (followedByLang) sets.unshift(hit); else sets.push(hit); }
     else if (followedByLang && /[A-Z]/.test(tok)) unknown ||= tok;        // looks like a set code, but not one in the card index
   }
-  return { num, sets: [...new Set(sets)].slice(0, 3), lang, unknown: sets.length ? "" : unknown };
+  return { num, nums, sets: [...new Set(sets)].slice(0, 4), lang, unknown: sets.length ? "" : unknown };
 }
 function similarity(a, b) {
   a = a.toLowerCase().replace(/[^a-z]/g, ""); b = b.toLowerCase().replace(/[^a-z]/g, "");
@@ -462,38 +465,59 @@ async function readName(w, snap) {
   const names = [...new Set([...pick.names, ...tries.flatMap(t => t.names)])].slice(0, 3);
   return { names, cv: pick.cv, data: pick.data };
 }
-/** Read the set line: the bottom-most text lines in the set area (the number line and the set line are close together). */
+/** Read the set line. First the whole bottom area at once (numbers, set code and language are picked out wherever they
+    are; the artist and copyright text are ignored), then line by line if needed. A set code + number pair that exists in
+    the card index wins; the read texts are combined for that. */
 async function readSet(w, snap, codes) {
   const box = snap.box, z = ZONES.set, r = { x: box.x + z.x * box.w, y: box.y + z.y * box.h, w: z.w * box.w, h: z.h * box.h };
-  const cardH = Math.min(snap.rect.h, snap.alt ? snap.alt.h : Infinity);
-  const bands = textBands(snap.cv, r).filter(b => { const h = (b.y1 - b.y0) * r.h / cardH; return h > 0.006 && h < 0.05; });
-  const cands = [];
-  for (let i = bands.length - 1; i >= 0 && cands.length < 3; i--) {
-    const b = bands[i], prev = bands[i - 1], bh = b.y1 - b.y0;
-    if (prev && b.y0 - prev.y1 < bh * 2.5) cands.push({ y0: prev.y0, y1: b.y1, lines: 2 });   // two lines together
-    cands.push({ y0: b.y0, y1: b.y1, lines: 1 });
-  }
-  const tries = [], full = t => t.info.num && t.info.sets.length;
-  for (const how of ["local", "global"]) {
-    for (const c of cands.slice(0, 3)) {
-      const bh = (c.y1 - c.y0) * r.h, y = r.y + c.y0 * r.h - bh * 0.25 / c.lines;
-      const cv = stripCanvas(snap.cv, r.x, y, r.w, bh * (1 + 0.5 / c.lines), c.lines === 2 ? 120 : 60, how);
-      const out = await w.set.recognize(cv), info = parseSetLine(out.data.text, codes);
-      tries.push({ cv, data: out.data, info });
-      if (full(tries[tries.length - 1])) break;
+  const cardH = Math.min(snap.rect.h, snap.alt ? snap.alt.h : Infinity), D = IDX.data;
+  const numVariants = n => [n, n.length >= 3 ? n.slice(0, -1) : ""].filter(Boolean);   // a rarity letter read as a digit
+  const pairIn = info => { if (!D) return null;
+    for (const set of info.sets) for (const n of info.nums || []) for (const v of numVariants(n))
+      if (D.bySetCn.has(`${set.toLowerCase()}|${normCn(v)}`)) return { set, num: v };
+    return null; };
+  const tries = [];
+  const read = async (cv) => { const out = await w.set.recognize(cv), info = parseSetLine(out.data.text, codes); const t = { cv, data: out.data, info }; tries.push(t); return t; };
+  // 1. the whole area; the collector line is usually light text on the black border, so look at the bottom's brightness
+  const bottom = (() => { const c = document.createElement("canvas"); c.width = 40; c.height = 8; const g = c.getContext("2d");
+    g.drawImage(snap.cv, r.x, r.y + r.h * 0.6, r.w, r.h * 0.4, 0, 0, 40, 8); const d = g.getImageData(0, 0, 40, 8).data;
+    let s = 0; for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2]; return s / (d.length / 4) / 3; })();
+  const textTone = bottom < 110 ? "light" : "auto";
+  const linesInArea = Math.max(2, Math.round(r.h / cardH / 0.03));            // about how many text lines fit in the area
+  let t = await read(stripCanvas(snap.cv, r.x, r.y, r.w, r.h, Math.min(420, 34 * linesInArea), "local", textTone));
+  // 2. line by line, bottom first, only if the whole-area read didn't give an existing set + number
+  if (!pairIn(t.info)) {
+    const bands = textBands(snap.cv, r).filter(b => { const h = (b.y1 - b.y0) * r.h / cardH; return h > 0.006 && h < 0.05; });
+    const cands = [];
+    for (let i = bands.length - 1; i >= 0 && cands.length < 3; i--) {
+      const b = bands[i], prev = bands[i - 1], bh = b.y1 - b.y0;
+      if (prev && b.y0 - prev.y1 < bh * 2.5) cands.push({ y0: prev.y0, y1: b.y1, lines: 2 });   // two lines together
+      cands.push({ y0: b.y0, y1: b.y1, lines: 1 });
     }
-    if (tries.some(t => t.info.sets.length)) break;     // a set code is enough to narrow the printings down
+    outer: for (const how of ["local", "global"]) {
+      for (const c of cands.slice(0, 3)) {
+        const bh = (c.y1 - c.y0) * r.h, y = r.y + c.y0 * r.h - bh * 0.25 / c.lines;
+        const tt = await read(stripCanvas(snap.cv, r.x, y, r.w, bh * (1 + 0.5 / c.lines), c.lines === 2 ? 120 : 60, how));
+        if (pairIn(tt.info)) break outer;
+      }
+      if (tries.some(x => x.info.sets.length)) break;
+    }
   }
-  if (!tries.length) { const cv = zoneCanvas(ZONES.set, snap.cv, box), out = await w.set.recognize(cv); tries.push({ cv, data: out.data, info: parseSetLine(out.data.text, codes) }); }
-  const score = t => (t.info.num ? 1 : 0) + (t.info.sets.length ? 2 : 0);
-  return tries.sort((a, b) => score(b) - score(a))[0];
+  // combine everything read: all set codes (those next to a language code first) and all numbers
+  const sets = [...new Set(tries.flatMap(x => x.info.sets))], nums = [...new Set(tries.flatMap(x => x.info.nums || []))];
+  const lang = tries.map(x => x.info.lang).find(Boolean) || "", unknown = sets.length ? "" : tries.map(x => x.info.unknown).find(Boolean) || "";
+  const merged = { sets, nums, num: nums[0] || "", lang, unknown };
+  const pair = pairIn(merged);
+  if (pair) { merged.sets = [pair.set, ...sets.filter(x => x !== pair.set)]; merged.num = pair.num; merged.nums = [pair.num, ...nums.filter(x => x !== pair.num)]; merged.checked = true; }
+  const score = x => (pairIn(x.info) ? 4 : 0) + (x.info.sets.length ? 2 : 0) + (x.info.num ? 1 : 0);
+  const shown = tries.slice().sort((a, b) => score(b) - score(a))[0];
+  return { cv: shown.cv, data: shown.data, info: merged };
 }
 
 // ------------------------------------------------------------------ local card index
 /* A compact list of every printing (built from Scryfall's bulk data by tools/build_card_index.py, see data/version.json),
    downloaded once and kept in the browser's IndexedDB. All lookups run on the device; nothing is asked from Scryfall
-   while scanning (the
-   index can't answer (not downloaded yet, a set newer than the index, or no good match). */
+   while scanning. */
 const IDX = { state: "not loaded", data: null, version: null };
 function idbOpen() {
   return new Promise((res, rej) => { const r = indexedDB.open("cardScanner", 1);
@@ -885,7 +909,7 @@ function renderResult() {
     div.innerHTML = `<b>${label}</b> <span class="hint">confidence ${Math.round(r.confidence)}%</span><br>`;
     div.append(cv); div.insertAdjacentHTML("beforeend", `<br><code>${esc(r.text.trim() || "(nothing)")}</code>`); $("#crops").append(div);
   });
-  $("#crops").insertAdjacentHTML("beforeend", `<code>${c.photoNote ? "Photo: " + esc(c.photoNote) + " · " : ""}Card edge: ${esc(c.used || "–")} · Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")} · Language: ${esc(c.info.lang || "–")}</code>`);
+  $("#crops").insertAdjacentHTML("beforeend", `<code>${c.photoNote ? "Photo: " + esc(c.photoNote) + " · " : ""}Card edge: ${esc(c.used || "–")} · Name: ${esc(c.name || "–")} · Number: ${esc(c.info.num || "–")} · Set: ${esc(c.info.sets.join(", ") || "–")}${c.info.checked ? " (set + number found in the card index)" : ""} · Language: ${esc(c.info.lang || "–")}</code>`);
 }
 $("#picker").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-id]"); if (!b || !current?.res.prints) return;
