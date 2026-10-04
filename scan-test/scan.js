@@ -5,7 +5,7 @@
    No Scryfall lookups while scanning; only card pictures load from Scryfall's image server. */
 
 const $ = s => document.querySelector(s);
-const VERSION = "2026.10.04-5";                  // keep in step with index.html (meta app-version and scan.js?v=)
+const VERSION = "2026.10.04-6";                  // keep in step with index.html (meta app-version and scan.js?v=)
 { // version tag, top right; red if the page and the script come from different versions (old files in the browser cache)
   const page = (document.querySelector('meta[name="app-version"]')?.content || "").replace("scan-test ", ""), el = document.querySelector("#ver");
   el.textContent = "v" + VERSION;
@@ -267,6 +267,7 @@ function detectBoxCard() {
     const i = ((y + ry0) * W + x + rx0) * 4;
     card[y * rw + x] = brightness(d, i) <= dark || chromaDist(d, i, boxCal.c) >= boxCal.tol ? 1 : 0;
   }
+  const touches = (rx, ry) => rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2;
   const run = (vals, thr) => {                        // longest run above thr, allowing 2-pixel gaps
     let best = null, start = -1, gap = 0;
     for (let k = 0; k <= vals.length; k++) {
@@ -276,18 +277,22 @@ function detectBoxCard() {
     return best;
   };
   const rows = []; for (let y = 0; y < rh; y++) { let s = 0; for (let x = 0; x < rw; x++) s += card[y * rw + x]; rows.push(s / rw); }
-  const ry = run(rows, 0.4); if (!ry || ry[1] - ry[0] < rh * 0.2) return null;
+  // rows that hold the card: compared with the fullest row, since the box area can be much wider than the card
+  const maxRow = Math.max(...rows), ry = maxRow >= 0.1 ? run(rows, Math.max(0.08, maxRow * 0.5)) : null;
+  if (!ry || ry[1] - ry[0] < rh * 0.2) { boxWhy = "nothing different from the box colour in the box area"; return null; }
   const cols = []; for (let x = 0; x < rw; x++) { let s = 0; for (let y = ry[0]; y <= ry[1]; y++) s += card[y * rw + x]; cols.push(s / (ry[1] - ry[0] + 1)); }
-  const rx = run(cols, 0.5); if (!rx) return null;
+  const rx = run(cols, 0.5); if (!rx) { boxWhy = "no card-wide block in the box area"; return null; }
   const w = rx[1] - rx[0] + 1, h = ry[1] - ry[0] + 1;
-  if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.18) return null;   // not card-shaped (a hand, or the card is still sliding)
+  if (Math.abs(w / h - CARD_RATIO) / CARD_RATIO > 0.18) {   // not card-shaped (a hand, or the card is still sliding)
+    boxWhy = `the block isn't card-shaped (width/height ${(w / h).toFixed(2)}, a card is ${CARD_RATIO.toFixed(2)}${touches(rx, ry) ? "; it reaches the edge of the picture: zoom out a little" : ""})`; return null; }
   let fill = 0; for (let y = ry[0]; y <= ry[1]; y++) for (let x = rx[0]; x <= rx[1]; x++) fill += card[y * rw + x];
-  fill /= w * h; if (fill < 0.75) return null;
+  fill /= w * h; if (fill < 0.75) { boxWhy = `only ${Math.round(fill * 100)}% of the block differs from the box colour (needs 75%): parts of the card look like the box`; return null; }
+  boxWhy = "";
   const k = srcSize()[0] / W;
   return { x: (rx[0] + rx0) * k, y: (ry[0] + ry0) * k, w: w * k, h: h * k, cov: fill, frame: false, alt: null,
     full: rx[0] + rx0 <= 1 || rx[1] + rx0 >= W - 2 || ry[0] + ry0 <= 1 || ry[1] + ry0 >= H - 2 };
 }
-let boxFull = false;
+let boxFull = false, boxWhy = "";
 function renderBox() {
   const on = boxActive();
   $("#boxOff").hidden = !boxCal;
@@ -659,7 +664,9 @@ function localIdentify(names, info) {
     // only the name, and it's the card's only printing: accepted only when the name was read clearly, and the set code
     // read (if any) is one the index knows; otherwise you confirm it
     if (prints.length === 1 && !info.unknown && m.sim >= 0.85) return { ...r, card: prints[0], how: "name (one printing)" };
-    return { ...r, card: null, how: "choose", named: prints[0], prints, suggested: new Set((byNum.length ? byNum : bySet).map(p => p.id)), unknown: info.unknown };
+    const suggested = new Set((byNum.length ? byNum : bySet).map(p => p.id));
+    const ordered = [...prints.filter(p => suggested.has(p.id)), ...prints.filter(p => !suggested.has(p.id))];   // matches first
+    return { ...r, card: null, how: "choose", named: prints[0], prints: ordered, suggested, unknown: info.unknown };
   }
   return { card: null, how: "fail", unknown: info.unknown };
 }
@@ -697,13 +704,20 @@ async function photoSnapshot() {
     } catch {}
   }
   const t = performance.now();
+  const ref = cardRect ? normThumb(video, cardRect) : null;   // the card as the video sees it now, to find the same spot in the photo
   let blob;
   try { blob = await imageCap.takePhoto(imageCap.settings); } catch { blob = await imageCap.takePhoto(); }   // some cameras refuse settings
   const bmp = await createImageBitmap(blob);
   const P = [bmp.width, bmp.height], [vw, vh] = srcSize(), sameShape = Math.abs(P[0] / P[1] - vw / vh) < 0.02;
   // where's the card in the photo? Box mode: the same place as in the video (the camera doesn't move); otherwise find it again
-  let r = null, a = null, frame = false;
-  if (!(boxActive() && sameShape)) {
+  let r = null, a = null, frame = false, how = "";
+  // box mode: the video outline moved into the photo, checked against the photo (the photo usually shows more around the
+  // video picture, and may or may not include the zoom)
+  if (boxActive() && !sameShape && ref) {
+    const m = mapToPhoto(bmp, P, ref);
+    if (m) { r = m.r; a = m.a; frame = cardIsFrame; how = m.how; }
+  }
+  if (!r && !(boxActive() && sameShape)) {
     const d = detectCard(bmp, P);
     if (d && (!sameShape || !cardRect || Math.abs(d.x / P[0] - cardRect.x / vw) < 0.05)) { r = { x: d.x, y: d.y, w: d.w, h: d.h }; a = d.alt; frame = d.frame; }
   }
@@ -712,9 +726,41 @@ async function photoSnapshot() {
     r = sc(cardRect); a = sc(cardAlt); frame = cardIsFrame;
   }
   if (!r) { bmp.close?.(); return { ms: performance.now() - t, size: P, failed: "card not found in the photo" }; }
+  if (!r && ref && !sameShape) { const m = mapToPhoto(bmp, P, ref); if (m) { r = m.r; a = m.a; frame = cardIsFrame; how = m.how; } }
   const snap = snapshotCard(bmp, P, r, a, frame);
   bmp.close?.();
-  return Object.assign(snap, { ms: performance.now() - t, size: P });
+  return Object.assign(snap, { ms: performance.now() - t, size: P, placed: how });
+}
+/** A small grey copy of an area, with brightness and contrast evened out, to compare the same card in two pictures. */
+function normThumb(src, q, W = 24, H = 34) {
+  const cv = normThumb.cv || (normThumb.cv = Object.assign(document.createElement("canvas"), { width: W, height: H }));
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.clearRect(0, 0, W, H); g.drawImage(src, q.x, q.y, q.w, q.h, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, v = new Float32Array(W * H);
+  let m = 0; for (let i = 0; i < v.length; i++) { v[i] = d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]; m += v[i]; } m /= v.length;
+  let sd = 0; for (let i = 0; i < v.length; i++) { v[i] -= m; sd += v[i] * v[i]; } sd = Math.sqrt(sd / v.length) || 1;
+  for (let i = 0; i < v.length; i++) v[i] /= sd;
+  return v;
+}
+const picSimilarity = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s / a.length; };   // 1 = same picture
+/** Where the video's card outline is in a photo of another shape. Phones usually make the video by cutting the middle
+   out of the full sensor picture, so the photo shows the video's picture plus extra at two sides; some apply the zoom to
+   photos, some don't. Each possibility is checked against the photo, small shifts included, and the best match is used. */
+function mapToPhoto(bmp, P, ref) {
+  const [vw, vh] = srcSize(), base = Math.min(P[0] / vw, P[1] / vh), z = curZoom || 1;
+  let best = null;
+  for (const [k, label] of [[base, "photo matched to the video"], ...(z > 1.01 ? [[base / z, "photo matched to the video (photo without zoom)"]] : [])]) {
+    const ox = (P[0] - vw * k) / 2, oy = (P[1] - vh * k) / 2;
+    const map = q => q && { x: ox + q.x * k, y: oy + q.y * k, w: q.w * k, h: q.h * k };
+    const r0 = map(cardRect);
+    for (const dy of [0, -0.02, 0.02]) for (const dx of [0, -0.02, 0.02]) {
+      const r = { ...r0, x: r0.x + dx * r0.w, y: r0.y + dy * r0.h };
+      if (r.x < -r.w * 0.05 || r.y < -r.h * 0.05 || r.x + r.w > P[0] * 1.05 || r.y + r.h > P[1] * 1.05) continue;
+      const sim = picSimilarity(ref, normThumb(bmp, r));
+      if (!best || sim > best.sim) best = { sim, r, a: cardAlt && { ...map(cardAlt), x: map(cardAlt).x + dx * r0.w, y: map(cardAlt).y + dy * r0.h }, how: label };
+    }
+  }
+  return best && best.sim >= 0.6 ? best : null;
 }
 /** Sharpness of the two read areas: variance of the Laplacian (higher = sharper edges). */
 function sharpness(snap) {
@@ -784,7 +830,7 @@ async function scan(trigger = "auto") {
         status("Reading the photo…");
         const R2 = await readSnap(ph), better = !R || rank(R2.res) > rank(R.res);
         photoNote = `photo ${ph.size.join("×")} in ${(ph.ms / 1000).toFixed(1)} s, ${better ? "used" : "no better than the video"}`;
-        if (better) { R = R2; used = (ph.frame ? "frame + border" : "outer edge") + ", from the photo"; }
+        if (better) { R = R2; used = ph.placed ? `${ph.placed} (${ph.frame ? "frame + border" : "outer edge"})` : (ph.frame ? "frame + border" : "outer edge") + ", found again in the photo"; }
       } catch (e) { photoNote = "photo failed: " + (e?.message || e?.name || e); }
     };
     if (useMode === 4) {                              // photo only (the video frame only if no photo can be taken)
@@ -902,7 +948,7 @@ function renderResult() {
   const pw = $("#pickerWrap"); pw.hidden = !c.res.prints || !!card;
   choosing = !pw.hidden;                            // automatic scanning pauses until a printing is chosen or skipped
   if (c.res.prints && !card) {
-    $("#pickerHint").textContent = c.res.suggested.size ? "Green = matches what was read." : "Pick the printing you have (newest first).";
+    $("#pickerHint").textContent = c.res.suggested.size ? "Green = matches what was read (shown first)." : "Pick the printing you have (newest first).";
     $("#picker").innerHTML = c.res.prints.map(p => `<button data-id="${esc(p.id)}" class="${c.res.suggested.has(p.id) ? "sug" : ""}">
       <img src="${esc(img(p, "small"))}" alt="" loading="lazy"><span>${esc(p.set.toUpperCase())} #${esc(p.collector_number)}</span><span>${esc(p.released_at?.slice(0, 4) || "")}</span></button>`).join("");
   }
@@ -1129,7 +1175,7 @@ function step() {
   if (!busy) updateCard();
   drawOverlay();
   if (!cardRect) {                                  // no card: re-arm after ~1 s, so the same card can be scanned again
-    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = choosing ? "paused until you choose the printing or skip" : "no card found in the picture"; diag();
+    prev = null; stillFor = 0; motion = null; movedSince = 99; autoWhy = choosing ? "paused until you choose the printing or skip" : boxActive() && boxWhy ? `no card found: ${boxWhy}` : "no card found in the picture"; diag();
     if (++goneFor >= (boxActive() ? 8 : 5) && !armed) { armed = true; status(boxActive() ? "Slide a card into the box." : "Hold a card in front of the camera."); }
     return;
   }

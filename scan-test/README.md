@@ -51,6 +51,10 @@ For scanning into a box (for example a 3D-printed box the cards slide into) with
 3. Slide cards in. The card is found as the part of the box area that isn't box colour, so the outline follows the stack as it grows towards the camera. Capture starts about 0.3 s after a new card stops moving (hand-held: about 0.6–0.8 s).
 4. When the stack reaches the edge of the picture, the page says so: empty the box.
 
+The box area may be much wider than the card; the card is the block that clearly differs from the box colour. When no card is found, the diagnostics line says why (nothing different from the box colour, a block that isn't card-shaped, or a card that partly looks like the box).
+
+**Photos in box mode:** phones usually take photos in a different shape from the video (for example 4:3 photos, 16:9 video), so the photo shows more around the video picture. The card outline found in the video is moved into the photo and checked against it (with and without the zoom, and small shifts); the result says "photo matched to the video". Only if that check fails is the card searched for again in the photo.
+
 A brightly coloured, matte box works best (green or magenta); black, white, grey, gold and silver are too close to card borders. If the box is greyish, calibration warns.
 
 ## Card index (on the device)
